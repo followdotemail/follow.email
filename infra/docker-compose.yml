@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # Frontend Service (Next.js)
+  frontend:
+    build:
+      context: ../apps/frontend
+      dockerfile: ../../infra/Dockerfile.frontend
+    container_name: follow-email-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+    volumes:
+      - ../apps/frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - follow-email-network
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  # Backend Service (Go)
+  backend:
+    build:
+      context: ../apps/backend
+      dockerfile: ../../infra/Dockerfile.backend
+    container_name: follow-email-backend
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    environment:
+      - PORT=${PORT}
+      - GIN_MODE=${GIN_MODE}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - CLERK_WEBHOOK_SECRET=${CLERK_WEBHOOK_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - QSTASH_URL=${QSTASH_URL}
+      - QSTASH_TOKEN=${QSTASH_TOKEN}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - ENVIRONMENT=${ENVIRONMENT}
+    volumes:
+      - ../apps/backend:/app
+    networks:
+      - follow-email-network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: follow-email-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - follow-email-network
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+networks:
+  follow-email-network:
+    driver: bridge
+

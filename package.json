@@ -1,0 +1,37 @@
+{
+  "name": "follow-email-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Follow Email - Monorepo containing frontend (Next.js) and backend (Go)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint",
+    "format": "turbo run format",
+    "clean": "turbo run clean",
+    "frontend:dev": "npm run dev --workspace=apps/frontend",
+    "frontend:build": "npm run build --workspace=apps/frontend",
+    "frontend:start": "npm run start --workspace=apps/frontend",
+    "backend:dev": "cd apps/backend && go run main.go",
+    "backend:build": "cd apps/backend && go build -o follow_email main.go",
+    "backend:test": "cd apps/backend && go test ./...",
+    "docker:up": "cd infra && docker-compose up -d",
+    "docker:down": "cd infra && docker-compose down",
+    "docker:logs": "cd infra && docker-compose logs -f",
+    "docker:build": "cd infra && docker-compose build"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "packageManager": "npm@10.0.0"
+}
+

@@ -1,0 +1,74 @@
+name: Deploy to Excloud
+
+on:
+  push:
+    branches: ["master", "main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy Backend to server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            cd /home/ubuntu/apps/follow.email && 
+            git pull origin master &&
+            # Navigate to backend
+            cd apps/backend &&
+            # Ensure swagger files are present
+            if [ ! -f swagger.yaml ]; then
+              echo 'Error: swagger.yaml not found after git pull'
+              exit 1
+            fi &&
+            if [ ! -d swagger-ui ]; then
+              echo 'Error: swagger-ui directory not found after git pull'
+              exit 1
+            fi &&
+            # Build Go application
+            go build -o follow_email main.go &&
+            # Restart the Go application
+            sudo systemctl restart follow_email
+          "
+      
+      - name: Deploy Frontend to server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            cd /home/ubuntu/apps/follow.email/apps/frontend &&
+            # Install dependencies if needed
+            npm install &&
+            # Build frontend
+            npm run build &&
+            # Restart frontend service (if using PM2 or similar)
+            pm2 restart follow-email-frontend || pm2 start npm --name follow-email-frontend -- start
+          "
+      
+      - name: Restart nginx
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            sudo systemctl restart nginx
+          "
+      
+      - name: Check nginx status
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            sudo systemctl status nginx
+          "
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            sudo systemctl status follow_email &&
+            pm2 list
+          "
+

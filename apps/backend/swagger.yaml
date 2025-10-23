@@ -1,0 +1,1654 @@
+swagger: "2.0"
+info:
+  title: Follow Email Backend API
+  description: |
+    A comprehensive email management and AI-powered analysis API that provides:
+    - Email synchronization from multiple providers (Gmail, Outlook)
+    - AI-powered email analysis and response generation
+    - Queue management and background processing
+    - Privacy compliance and GDPR features
+  version: "1.0.0"
+  contact:
+    name: Follow Email Backend Team
+    email: follow.email07@gmail.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+host: api.follow.email
+basePath: /api/v1
+schemes:
+  - http
+  - https
+consumes:
+  - application/json
+produces:
+  - application/json
+
+securityDefinitions:
+  bearer:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: |
+      Bearer token authentication. Use format: "Bearer <token>"
+      Tokens are issued by Clerk authentication service.
+  BearerAuth:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: |
+      Bearer token authentication. Use format: "Bearer <token>"
+      Tokens are issued by Clerk authentication service.
+
+tags:
+  - name: health
+    description: Health check and system status
+  - name: auth
+    description: Authentication and user management operations
+  - name: gmail
+    description: Gmail OAuth consent and integration operations
+  - name: emails
+    description: Email synchronization, analysis, and management operations
+  - name: privacy
+    description: Privacy compliance and data protection operations
+
+paths:
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check endpoint
+      description: Returns the health status of the API server
+      responses:
+        200:
+          description: Server is healthy
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: "healthy"
+              timestamp:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /ping:
+    get:
+      tags:
+        - health
+      summary: Ping endpoint
+      description: Simple ping endpoint that returns pong
+      responses:
+        200:
+          description: Pong response
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "pong"
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /auth/register:
+    post:
+      tags:
+        - auth
+      summary: Register a new user
+      description: Creates a new user account with email and password
+      parameters:
+        - name: body
+          in: body
+          description: User registration data
+          required: true
+          schema:
+            type: object
+            required:
+              - email
+              - password
+              - first_name
+              - last_name
+            properties:
+              email:
+                type: string
+                format: email
+                example: "user@example.com"
+              password:
+                type: string
+                minLength: 8
+                example: "securePassword123"
+              first_name:
+                type: string
+                example: "John"
+              last_name:
+                type: string
+                example: "Doe"
+      responses:
+        201:
+          description: User registered successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "User registered successfully"
+              user_id:
+                type: string
+                example: "user_123456"
+              email:
+                type: string
+                format: email
+                example: "user@example.com"
+        400:
+          description: Bad request - validation errors
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        409:
+          description: Conflict - user already exists
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /auth/login:
+    post:
+      tags:
+        - auth
+      summary: User login
+      description: Authenticates user and returns JWT token
+      parameters:
+        - name: body
+          in: body
+          description: User login credentials
+          required: true
+          schema:
+            type: object
+            required:
+              - email
+              - password
+            properties:
+              email:
+                type: string
+                format: email
+                example: "user@example.com"
+              password:
+                type: string
+                example: "securePassword123"
+      responses:
+        200:
+          description: Login successful
+          schema:
+            type: object
+            properties:
+              token:
+                type: string
+                example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+              user:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "user_123456"
+                  email:
+                    type: string
+                    format: email
+                    example: "user@example.com"
+                  first_name:
+                    type: string
+                    example: "John"
+                  last_name:
+                    type: string
+                    example: "Doe"
+        400:
+          description: Bad request - validation errors
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /auth/google:
+    get:
+      tags:
+        - auth
+      summary: Google OAuth login
+      description: Initiates Google OAuth authentication flow
+      parameters:
+        - name: return_url
+          in: query
+          description: URL to redirect after successful authentication
+          required: false
+          type: string
+          example: "https://yourapp.com/dashboard"
+      responses:
+        302:
+          description: Redirect to Google OAuth authorization URL
+        400:
+          description: Bad request - invalid parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /auth/google/callback:
+    get:
+      tags:
+        - auth
+      summary: Google OAuth callback
+      description: Handles the OAuth callback from Google (called automatically)
+      parameters:
+        - name: code
+          in: query
+          description: Authorization code from Google
+          required: true
+          type: string
+        - name: state
+          in: query
+          description: State parameter for security
+          required: true
+          type: string
+        - name: error
+          in: query
+          description: Error from Google if authorization failed
+          required: false
+          type: string
+      responses:
+        200:
+          description: Authentication successful
+          schema:
+            type: object
+            properties:
+              token:
+                type: string
+                example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+              user:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "user_123456"
+                  email:
+                    type: string
+                    format: email
+                    example: "user@gmail.com"
+                  first_name:
+                    type: string
+                    example: "John"
+                  last_name:
+                    type: string
+                    example: "Doe"
+        400:
+          description: Bad request - invalid callback parameters or OAuth error
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "OAuth authorization failed"
+              details:
+                type: string
+                example: "access_denied"
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /profile:
+    get:
+      tags:
+        - auth
+      summary: Get user profile
+      description: Returns the authenticated user's profile information
+      security:
+        - bearer: []
+      responses:
+        200:
+          description: User profile retrieved successfully
+          schema:
+            type: object
+            properties:
+              id:
+                type: string
+                example: "user_123456"
+              email:
+                type: string
+                format: email
+                example: "user@example.com"
+              first_name:
+                type: string
+                example: "John"
+              last_name:
+                type: string
+                example: "Doe"
+              created_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+              updated_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        404:
+          description: User not found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /privacy/consent:
+    post:
+      tags:
+        - privacy
+      summary: Record user consent
+      description: Records user consent for data processing and privacy policies
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Consent information
+          required: true
+          schema:
+            type: object
+            required:
+              - consent_type
+              - granted
+            properties:
+              consent_type:
+                type: string
+                enum: ["data_processing", "marketing", "analytics", "cookies"]
+                example: "data_processing"
+              granted:
+                type: boolean
+                example: true
+              purpose:
+                type: string
+                example: "Email synchronization and analysis"
+              data_categories:
+                type: array
+                items:
+                  type: string
+                example: ["email_content", "metadata", "user_preferences"]
+      responses:
+        200:
+          description: Consent recorded successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Consent recorded successfully"
+              consent_id:
+                type: string
+                example: "consent_123456"
+              recorded_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+        400:
+          description: Bad request - invalid consent data
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /privacy/export-request:
+    post:
+      tags:
+        - privacy
+      summary: Request data export
+      description: Creates a request to export user's personal data (GDPR compliance)
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Data export request details
+          required: true
+          schema:
+            type: object
+            properties:
+              data_types:
+                type: array
+                items:
+                  type: string
+                  enum: ["profile", "emails", "preferences", "activity_logs", "all"]
+                example: ["profile", "emails"]
+              format:
+                type: string
+                enum: ["json", "csv", "xml"]
+                default: "json"
+                example: "json"
+              reason:
+                type: string
+                example: "GDPR data portability request"
+      responses:
+        202:
+          description: Export request created successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Data export request created successfully"
+              request_id:
+                type: string
+                example: "export_123456"
+              estimated_completion:
+                type: string
+                format: date-time
+                example: "2024-01-15T12:30:00Z"
+              status:
+                type: string
+                example: "pending"
+        400:
+          description: Bad request - invalid export request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        429:
+          description: Too many requests - rate limit exceeded
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /privacy/delete-request:
+    post:
+      tags:
+        - privacy
+      summary: Request data deletion
+      description: Creates a request to delete user's personal data (GDPR right to be forgotten)
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Data deletion request details
+          required: true
+          schema:
+            type: object
+            properties:
+              data_types:
+                type: array
+                items:
+                  type: string
+                  enum: ["profile", "emails", "preferences", "activity_logs", "all"]
+                example: ["emails", "activity_logs"]
+              reason:
+                type: string
+                example: "GDPR right to be forgotten request"
+              confirmation:
+                type: boolean
+                example: true
+                description: "User confirmation that they understand the consequences"
+      responses:
+        202:
+          description: Deletion request created successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Data deletion request created successfully"
+              request_id:
+                type: string
+                example: "delete_123456"
+              estimated_completion:
+                type: string
+                format: date-time
+                example: "2024-01-15T12:30:00Z"
+              status:
+                type: string
+                example: "pending"
+              warning:
+                type: string
+                example: "This action cannot be undone. Your account will be permanently deleted."
+        400:
+          description: Bad request - invalid deletion request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        429:
+          description: Too many requests - rate limit exceeded
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /privacy/export/{requestId}:
+    get:
+      tags:
+        - privacy
+      summary: Get data export
+      description: Downloads the exported data file for a completed export request
+      security:
+        - bearer: []
+      parameters:
+        - name: requestId
+          in: path
+          description: The export request ID
+          required: true
+          type: string
+          example: "export_123456"
+      responses:
+        200:
+          description: Export data retrieved successfully
+          schema:
+            type: object
+            properties:
+              request_id:
+                type: string
+                example: "export_123456"
+              status:
+                type: string
+                example: "completed"
+              created_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+              completed_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T11:30:00Z"
+              download_url:
+                type: string
+                example: "https://api.example.com/downloads/export_123456.json"
+              expires_at:
+                type: string
+                format: date-time
+                example: "2024-01-22T11:30:00Z"
+              file_size:
+                type: integer
+                example: 1048576
+                description: "File size in bytes"
+        400:
+          description: Bad request - invalid request ID
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        404:
+          description: Export request not found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        410:
+          description: Export has expired
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /privacy/requests:
+    get:
+      tags:
+        - privacy
+      summary: Get user privacy requests
+      description: Returns a list of all privacy requests (export/deletion) made by the user
+      security:
+        - bearer: []
+      parameters:
+        - name: type
+          in: query
+          description: Filter by request type
+          required: false
+          type: string
+          enum: ["export", "deletion", "all"]
+          default: "all"
+        - name: status
+          in: query
+          description: Filter by request status
+          required: false
+          type: string
+          enum: ["pending", "processing", "completed", "failed", "all"]
+          default: "all"
+        - name: limit
+          in: query
+          description: Maximum number of requests to return
+          required: false
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        - name: offset
+          in: query
+          description: Number of requests to skip
+          required: false
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        200:
+          description: Privacy requests retrieved successfully
+          schema:
+            type: object
+            properties:
+              requests:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      example: "export_123456"
+                    type:
+                      type: string
+                      enum: ["export", "deletion"]
+                      example: "export"
+                    status:
+                      type: string
+                      enum: ["pending", "processing", "completed", "failed"]
+                      example: "completed"
+                    created_at:
+                      type: string
+                      format: date-time
+                      example: "2024-01-15T10:30:00Z"
+                    completed_at:
+                      type: string
+                      format: date-time
+                      example: "2024-01-15T11:30:00Z"
+                    data_types:
+                      type: array
+                      items:
+                        type: string
+                      example: ["profile", "emails"]
+              total:
+                type: integer
+                example: 5
+              limit:
+                type: integer
+                example: 20
+              offset:
+                type: integer
+                example: 0
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /gmail/consent/initiate:
+    post:
+      tags:
+        - gmail
+      summary: Initiate Gmail OAuth consent
+      description: |
+        Starts the Gmail OAuth consent flow and returns authorization URL.
+        
+        **Important Notes:**
+        - The auth_url contains properly formatted ampersand (&) characters for OAuth parameters
+        - Custom JSON encoding is used to prevent HTML escaping of & characters
+        - The returned URL can be directly used for OAuth authorization without additional processing
+        
+        **Development Mode:**
+        - In development, uses a default user ID for testing
+        - Production requires proper authentication via Bearer token
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Gmail consent initiation parameters
+          required: false
+          schema:
+            type: object
+            properties:
+              return_url:
+                type: string
+                description: Optional return URL after successful OAuth flow
+                example: "https://yourapp.com/gmail-connected"
+      responses:
+        200:
+          description: Authorization URL generated successfully
+          schema:
+            type: object
+            required:
+              - auth_url
+              - state
+              - message
+            properties:
+              auth_url:
+                type: string
+                description: |
+                  Google OAuth authorization URL with properly formatted parameters.
+                  Contains & characters (not \u0026) for correct OAuth parameter parsing.
+                example: "https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=437264857039-0jjlrefj3p9v29dj2lepujhfjo0smvtu.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fapi%2Fv1%2Fgmail%2Fconsent%2Fcallback&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile&state=dev-user-123_1759677815"
+              state:
+                type: string
+                description: State parameter for OAuth security and user identification
+                example: "dev-user-123_1759677815"
+              message:
+                type: string
+                description: Instructions for the user
+                example: "Please visit the auth_url to grant Gmail access permissions"
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /gmail/consent/callback:
+    get:
+      tags:
+        - gmail
+      summary: Gmail OAuth callback
+      description: Handles the OAuth callback from Google (called automatically)
+      parameters:
+        - name: code
+          in: query
+          description: Authorization code from Google
+          required: true
+          type: string
+        - name: state
+          in: query
+          description: State parameter for security
+          required: true
+          type: string
+        - name: error
+          in: query
+          description: Error from Google if authorization failed
+          required: false
+          type: string
+      responses:
+        200:
+          description: Gmail access granted successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Gmail access granted successfully"
+              user_email:
+                type: string
+                format: email
+                example: "user@gmail.com"
+              consent_date:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+              sync_enabled:
+                type: boolean
+                example: true
+        400:
+          description: Bad request - invalid callback parameters or OAuth error
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "OAuth authorization failed"
+              details:
+                type: string
+                example: "access_denied"
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /gmail/consent/status:
+    get:
+      tags:
+        - gmail
+      summary: Get Gmail connection status
+      description: Returns the current Gmail connection and consent status
+      security:
+        - bearer: []
+      responses:
+        200:
+          description: Gmail status retrieved successfully
+          schema:
+            type: object
+            properties:
+              connected:
+                type: boolean
+                example: true
+              consent_given:
+                type: boolean
+                example: true
+              consent_date:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+              sync_enabled:
+                type: boolean
+                example: true
+              last_sync_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T12:00:00Z"
+              email_address:
+                type: string
+                format: email
+                example: "user@gmail.com"
+              connection_status:
+                type: string
+                enum: ["active", "error", "not_connected"]
+                example: "active"
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /gmail/consent/revoke:
+    delete:
+      tags:
+        - gmail
+      summary: Revoke Gmail consent
+      description: Revokes Gmail access and deletes stored tokens
+      security:
+        - bearer: []
+      responses:
+        200:
+          description: Gmail access revoked successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Gmail access revoked successfully"
+              revoked_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T14:30:00Z"
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        404:
+          description: User not found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/sync:
+    post:
+      tags:
+        - emails
+      summary: Synchronize emails from provider
+      description: |
+        Initiates an email synchronization process for the authenticated user.
+        Supports both full sync and incremental sync based on the provided parameters.
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Email sync request parameters
+          required: true
+          schema:
+            $ref: '#/definitions/SyncEmailsRequest'
+      responses:
+        200:
+          description: Sync job queued successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Email sync job queued successfully"
+              job_id:
+                type: string
+                example: "550e8400-e29b-41d4-a716-446655440000"
+        400:
+          description: Bad request - invalid parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/sync/status:
+    get:
+      tags:
+        - emails
+      summary: Get email synchronization status
+      description: |
+        Returns the current synchronization status for the specified email provider.
+        Includes information about the last sync time, sync progress, and any errors.
+      security:
+        - bearer: []
+      parameters:
+        - name: provider
+          in: query
+          description: Email provider name (gmail, outlook)
+          required: true
+          type: string
+          example: gmail
+      responses:
+        200:
+          description: Sync status retrieved successfully
+          schema:
+            type: object
+            properties:
+              provider:
+                type: string
+                example: gmail
+              status:
+                type: string
+                example: completed
+              last_sync_time:
+                type: string
+                format: date-time
+                example: "2023-01-01T12:00:00Z"
+              emails_synced:
+                type: integer
+                example: 150
+              errors:
+                type: array
+                items:
+                  type: string
+                example: []
+        400:
+          description: Bad request - missing provider parameter
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails:
+    get:
+      tags:
+        - emails
+      summary: Get list of emails
+      description: |
+        Retrieves a paginated list of emails for the authenticated user with advanced
+        filtering, sorting, and search capabilities. Supports filtering by sender, subject,
+        date range, read status, importance, attachments, AI analysis results, and follow-up status.
+      security:
+        - bearer: []
+      parameters:
+        - name: page
+          in: query
+          description: Page number for pagination (starts from 1)
+          type: integer
+          default: 1
+          minimum: 1
+        - name: limit
+          in: query
+          description: Number of emails per page (maximum 100)
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+        - name: from_email
+          in: query
+          description: Filter by sender email address (partial match, case-insensitive)
+          type: string
+          example: "sender@example.com"
+        - name: subject
+          in: query
+          description: Filter by email subject (partial match, case-insensitive)
+          type: string
+          example: "meeting"
+        - name: start_date
+          in: query
+          description: Filter emails received on or after this date (ISO 8601 format)
+          type: string
+          format: date-time
+          example: "2023-01-01T00:00:00Z"
+        - name: end_date
+          in: query
+          description: Filter emails received on or before this date (ISO 8601 format)
+          type: string
+          format: date-time
+          example: "2023-12-31T23:59:59Z"
+        - name: is_read
+          in: query
+          description: Filter by read status
+          type: boolean
+          example: false
+        - name: is_important
+          in: query
+          description: Filter by importance flag
+          type: boolean
+          example: true
+        - name: has_attachments
+          in: query
+          description: Filter emails with or without attachments
+          type: boolean
+          example: true
+        - name: ai_sentiment
+          in: query
+          description: Filter by AI-detected sentiment
+          type: string
+          enum: [positive, neutral, negative]
+          example: "positive"
+        - name: ai_priority
+          in: query
+          description: Filter by AI-detected priority level
+          type: string
+          enum: [high, medium, low]
+          example: "high"
+        - name: requires_followup
+          in: query
+          description: Filter emails that require follow-up
+          type: boolean
+          example: true
+        - name: followup_status
+          in: query
+          description: Filter by follow-up status
+          type: string
+          enum: [pending, sent, completed, cancelled]
+          example: "pending"
+        - name: sort_by
+          in: query
+          description: Field to sort by
+          type: string
+          enum: [sent_at, received_at, subject, from_email, created_at]
+          default: received_at
+          example: "received_at"
+        - name: sort_order
+          in: query
+          description: Sort order
+          type: string
+          enum: [asc, desc]
+          default: desc
+          example: "desc"
+      responses:
+        200:
+          description: Emails retrieved successfully
+          schema:
+            type: object
+            properties:
+              emails:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                      example: "550e8400-e29b-41d4-a716-446655440000"
+                    clerk_id:
+                      type: string
+                      example: "user_2abc123xyz"
+                    message_id:
+                      type: string
+                      example: "17a1b2c3d4e5f6g7"
+                    thread_id:
+                      type: string
+                      example: "17a1b2c3d4e5f6g7"
+                    subject:
+                      type: string
+                      example: "Meeting Request"
+                    from_email:
+                      type: string
+                      example: "sender@example.com"
+                    from_name:
+                      type: string
+                      example: "John Doe"
+                    to_emails:
+                      type: string
+                      example: "recipient@example.com"
+                    cc_emails:
+                      type: string
+                      example: "cc@example.com"
+                    bcc_emails:
+                      type: string
+                      example: ""
+                    updated_at:
+                      type: string
+                      format: date-time
+                      example: "2023-10-15T10:30:00Z"
+                    is_read:
+                      type: boolean
+                      example: false
+                    is_important:
+                      type: boolean
+                      example: true
+                    has_attachments:
+                      type: boolean
+                      example: true
+                    labels:
+                      type: string
+                      description: JSON array of Gmail label IDs
+                      example: '["INBOX","IMPORTANT"]'
+                    last_sync_at:
+                      type: string
+                      format: date-time
+                      example: "2023-10-15T10:30:00Z"
+              pagination:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                    example: 1
+                  limit:
+                    type: integer
+                    example: 20
+                  total:
+                    type: integer
+                    example: 150
+                  total_pages:
+                    type: integer
+                    example: 8
+                  has_next:
+                    type: boolean
+                    example: true
+                  has_prev:
+                    type: boolean
+                    example: false
+        400:
+          description: Bad request - invalid query parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/{email_id}:
+    get:
+      tags:
+        - emails
+      summary: Get email by ID
+      description: |
+        Retrieves detailed metadata for a specific email by its UUID.
+        Returns email header information including S3 storage keys but does not
+        include the full email body or attachment content. Use /emails/{email_id}/content
+        to retrieve the actual email body and attachment download URLs.
+      security:
+        - bearer: []
+      parameters:
+        - name: email_id
+          in: path
+          description: UUID of the email to retrieve
+          required: true
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        200:
+          description: Email retrieved successfully
+          schema:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+                example: "550e8400-e29b-41d4-a716-446655440000"
+              user_id:
+                type: string
+                format: uuid
+                example: "09e3540a-85c7-4c8c-ab79-e20728eff9f3"
+              s3_body_key:
+                type: string
+                description: S3 key for the email body storage
+                example: "emails/user_09e3540a-85c7-4c8c-ab79-e20728eff9f3/bodies/2023/10/15/msg123.html"
+              s3_attachments_key:
+                type: string
+                description: Comma-separated S3 keys for attachments
+                example: "emails/user_09e3540a/attachments/2023/10/15/msg123_document.pdf,emails/user_09e3540a/attachments/2023/10/15/msg123_image.jpg"
+        400:
+          description: Bad request - invalid email ID format
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        404:
+          description: Email not found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/{email_id}/content:
+    get:
+      tags:
+        - emails
+      summary: Get email content and attachments
+      description: |
+        Retrieves the full email body and attachment information for a specific email.
+        Returns the email body content from S3 storage and generates presigned URLs
+        for all attachments (valid for 1 hour).
+      security:
+        - bearer: []
+      parameters:
+        - name: email_id
+          in: path
+          description: UUID of the email to retrieve content for
+          required: true
+          type: string
+          format: uuid
+      responses:
+        200:
+          description: Email content retrieved successfully
+          schema:
+            type: object
+            properties:
+              email_id:
+                type: string
+                format: uuid
+                example: "550e8400-e29b-41d4-a716-446655440000"
+              body:
+                type: string
+                description: Full HTML body of the email
+                example: "<html><body>Email content here...</body></html>"
+              attachments:
+                type: array
+                description: List of attachments with download URLs
+                items:
+                  type: object
+                  properties:
+                    filename:
+                      type: string
+                      example: "document.pdf"
+                    content_type:
+                      type: string
+                      example: "application/pdf"
+                    size:
+                      type: integer
+                      format: int64
+                      description: Size in bytes
+                      example: 1048576
+                    download_url:
+                      type: string
+                      description: Presigned S3 URL (valid for 1 hour)
+                      example: "https://s3.amazonaws.com/bucket/path/to/file?signature=..."
+        400:
+          description: Bad request - invalid email ID format
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        404:
+          description: Email not found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/send:
+    post:
+      tags:
+        - emails
+      summary: Send an email through Gmail
+      description: |
+        Sends an email through the user's connected Gmail account.
+        Supports plain text and HTML formats, CC/BCC, and email threading for replies.
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Email sending request parameters
+          required: true
+          schema:
+            type: object
+            required:
+              - to
+              - subject
+            properties:
+              to:
+                type: array
+                description: Recipient email addresses
+                items:
+                  type: string
+                  format: email
+                example: ["recipient@example.com", "another@example.com"]
+              cc:
+                type: array
+                description: CC email addresses (optional)
+                items:
+                  type: string
+                  format: email
+                example: ["cc@example.com"]
+              bcc:
+                type: array
+                description: BCC email addresses (optional)
+                items:
+                  type: string
+                  format: email
+                example: ["bcc@example.com"]
+              subject:
+                type: string
+                description: Email subject line
+                example: "Meeting Follow-up"
+              body_text:
+                type: string
+                description: Email body in plain text format (at least one of body_text or body_html required)
+                example: "Hi,\n\nJust following up on our meeting yesterday..."
+              body_html:
+                type: string
+                description: Email body in HTML format (at least one of body_text or body_html required)
+                example: "<html><body><p>Hi,</p><p>Just following up on our meeting yesterday...</p></body></html>"
+              thread_id:
+                type: string
+                description: Gmail thread ID for replying to an existing thread (optional)
+                example: "18a1b2c3d4e5f6g7"
+              in_reply_to:
+                type: string
+                description: Message-ID header for replying (optional)
+                example: "<original-message-id@gmail.com>"
+              references:
+                type: string
+                description: References header for threading (optional)
+                example: "<msg-1@gmail.com> <msg-2@gmail.com>"
+      responses:
+        200:
+          description: Email sent successfully
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Email sent successfully"
+              message_id:
+                type: string
+                description: Gmail message ID of the sent email
+                example: "18a1b2c3d4e5f6g7"
+              thread_id:
+                type: string
+                description: Gmail thread ID
+                example: "18a1b2c3d4e5f6g7"
+              to:
+                type: array
+                items:
+                  type: string
+                example: ["recipient@example.com"]
+              subject:
+                type: string
+                example: "Meeting Follow-up"
+              sent_at:
+                type: string
+                format: date-time
+                example: "2024-01-15T10:30:00Z"
+        400:
+          description: Invalid request parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - Invalid or missing authentication token
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Failed to send email
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        503:
+          description: Gmail service not available
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/analyze:
+    post:
+      tags:
+        - emails
+      summary: Analyze email content using AI
+      description: |
+        Analyzes the provided email content using AI to extract insights,
+        sentiment, priority level, and suggested actions.
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Email analysis request parameters
+          required: true
+          schema:
+            $ref: '#/definitions/AnalyzeEmailRequest'
+      responses:
+        200:
+          description: Email analysis completed successfully
+          schema:
+            type: object
+            properties:
+              analysis_id:
+                type: string
+                example: "550e8400-e29b-41d4-a716-446655440000"
+              sentiment:
+                type: string
+                example: positive
+              priority:
+                type: string
+                example: high
+              category:
+                type: string
+                example: business
+              key_points:
+                type: array
+                items:
+                  type: string
+                example: ["Meeting request", "Urgent deadline"]
+              suggested_actions:
+                type: array
+                items:
+                  type: string
+                example: ["Schedule meeting", "Confirm availability"]
+        400:
+          description: Bad request - invalid parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/generate-response:
+    post:
+      tags:
+        - emails
+      summary: Generate AI-powered email response
+      description: |
+        Generates an AI-powered response to an email based on the original content
+        and optional user context. The response is tailored to maintain professional tone and context.
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Email response generation request parameters
+          required: true
+          schema:
+            $ref: '#/definitions/GenerateResponseRequest'
+      responses:
+        200:
+          description: Email response generated successfully
+          schema:
+            type: object
+            properties:
+              response_id:
+                type: string
+                example: "550e8400-e29b-41d4-a716-446655440000"
+              subject:
+                type: string
+                example: "Re: Meeting Request"
+              body:
+                type: string
+                example: "Thank you for your email. I would be happy to schedule a meeting..."
+              tone:
+                type: string
+                example: professional
+              confidence_score:
+                type: number
+                format: float
+                example: 0.95
+        400:
+          description: Bad request - invalid parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - user not authenticated
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+
+
+definitions:
+  SyncEmailsRequest:
+    type: object
+    required:
+      - provider
+    properties:
+      provider:
+        type: string
+        description: Email provider name (gmail, outlook, etc.)
+        example: gmail
+      last_sync_time:
+        type: string
+        format: date-time
+        description: Timestamp of the last successful sync (for incremental sync)
+        example: "2023-01-01T12:00:00Z"
+      history_id:
+        type: string
+        description: Provider-specific history ID for incremental sync
+        example: "12345678"
+      delta_token:
+        type: string
+        description: Provider-specific delta token for incremental sync
+        example: "delta_token_abc123"
+
+  AnalyzeEmailRequest:
+    type: object
+    required:
+      - subject
+      - from_email
+      - body
+    properties:
+      subject:
+        type: string
+        description: Email subject line
+        example: "Meeting Request for Next Week"
+      from_email:
+        type: string
+        description: Sender's email address
+        example: "john.doe@example.com"
+      body:
+        type: string
+        description: Email body content
+        example: "Hi, I would like to schedule a meeting with you next week to discuss the project."
+
+  GenerateResponseRequest:
+    type: object
+    required:
+      - original_subject
+      - original_body
+      - from_email
+    properties:
+      original_subject:
+        type: string
+        description: Subject of the original email
+        example: "Meeting Request for Next Week"
+      original_body:
+        type: string
+        description: Body content of the original email
+        example: "Hi, I would like to schedule a meeting with you next week to discuss the project."
+      from_email:
+        type: string
+        description: Email address of the original sender
+        example: "john.doe@example.com"
+      user_context:
+        type: string
+        description: Additional context or instructions for response generation
+        example: "I'm available Tuesday and Wednesday afternoons"
+
+  ErrorResponse:
+    type: object
+    properties:
+      error:
+        type: string
+        description: Error code or type
+        example: "INVALID_REQUEST"
+      message:
+        type: string
+        description: Human-readable error message
+        example: "The request parameters are invalid"
+      code:
+        type: string
+        description: Specific error code for programmatic handling
+        example: "VALIDATION_ERROR"
+      timestamp:
+        type: string
+        format: date-time
+        description: Timestamp when the error occurred
+        example: "2023-01-01T12:00:00Z"
+      request_id:
+        type: string
+        description: Unique identifier for the request (for debugging)
+        example: "req_550e8400-e29b-41d4-a716-446655440000"

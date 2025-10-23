@@ -12,11 +12,6 @@ import (
 	"follow-email-backend/internal/models"
 )
 
-// Database connection constants - Using Neon pooler
-const (
-	dbURL = "postgresql://neondb_owner:npg_d3c1YHnafjuG@ep-rough-cherry-a14rsvz4-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-)
-
 func Connect(cfg *config.Config) (*gorm.DB, error) {
 	// Build GORM config
 	var gormConfig *gorm.Config
@@ -26,8 +21,8 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		gormConfig = &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)} // Reduced logging
 	}
 
-	// Open connection with GORM
-	db, err := gorm.Open(postgres.Open(dbURL), gormConfig)
+	// Open connection with GORM using DATABASE_URL from config
+	db, err := gorm.Open(postgres.Open(cfg.DatabaseURL), gormConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Neon database: %v", err)
 	}

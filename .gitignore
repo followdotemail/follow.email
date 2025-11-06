@@ -44,6 +44,7 @@ apps/backend/follow_email
 # ENVIRONMENT VARIABLES
 # ============================================
 
+*.env
 .env
 .env*
 .env*.local
@@ -134,3 +135,5 @@ set_env.bat
 .cache/
 tmp/
 temp/
+
+instance-info.json

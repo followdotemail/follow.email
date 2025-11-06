@@ -1,6 +1,6 @@
 module follow-email-backend
 
-go 1.24.0
+go 1.23.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.0
@@ -13,14 +13,14 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/upstash/qstash-go v1.0.0
-	golang.org/x/oauth2 v0.31.0
-	google.golang.org/api v0.249.0
+	golang.org/x/oauth2 v0.30.0
+	google.golang.org/api v0.239.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.0
 )
 
 require (
-	cloud.google.com/go v0.115.0 // indirect
+	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/ai v0.8.0 // indirect
 	cloud.google.com/go/auth v0.16.5 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect

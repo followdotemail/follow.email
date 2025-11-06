@@ -1,5 +1,8 @@
 version: '3.8'
 
+# Note: This docker-compose.yml loads environment variables from ../.env (root .env file)
+# Make sure your .env file exists at the project root
+
 services:
   # Frontend Service (Next.js)
   frontend:
@@ -7,6 +10,8 @@ services:
       context: ../apps/frontend
       dockerfile: ../../infra/Dockerfile.frontend
     container_name: follow-email-frontend
+    env_file:
+      - ../.env
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
@@ -30,6 +35,8 @@ services:
       context: ../apps/backend
       dockerfile: ../../infra/Dockerfile.backend
     container_name: follow-email-backend
+    env_file:
+      - ../.env
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     environment:
@@ -37,8 +44,6 @@ services:
       - GIN_MODE=${GIN_MODE}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
       - CLERK_WEBHOOK_SECRET=${CLERK_WEBHOOK_SECRET}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
@@ -63,6 +68,8 @@ services:
   nginx:
     image: nginx:alpine
     container_name: follow-email-nginx
+    env_file:
+      - ../.env
     ports:
       - "80:80"
       - "443:443"

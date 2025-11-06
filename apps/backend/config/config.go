@@ -39,9 +39,6 @@ type Config struct {
 	AWSSecretAccessKey string
 	S3BucketName       string
 
-	// RabbitMQ configuration
-	RabbitMQURL string
-
 	// QStash configuration
 	QStashToken             string
 	QStashCurrentSigningKey string
@@ -86,8 +83,6 @@ func Load() *Config {
 		AWSAccessKeyID:     getEnv("AWS_ACCESS_KEY_ID", ""),
 		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY", ""),
 		S3BucketName:       getEnv("S3_BUCKET_NAME", "followemail-storage"),
-
-		RabbitMQURL: getEnv("RABBITMQ_URL", "amqp://localhost:5672"),
 
 		QStashToken:             getEnv("QSTASH_TOKEN", ""),
 		QStashCurrentSigningKey: getEnv("QSTASH_CURRENT_SIGNING_KEY", ""),

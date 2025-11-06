@@ -1,4 +1,6 @@
 # Multi-stage build for Go backend
+# Note: Environment variables are injected at runtime via docker-compose.yml
+# which loads them from the root .env file
 FROM golang:1.23-alpine AS builder
 
 # Install build dependencies
@@ -8,11 +10,11 @@ RUN apk add --no-cache git
 WORKDIR /app
 
 # Copy go mod files
-COPY apps/backend/go.mod apps/backend/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY apps/backend/ ./
+COPY . ./
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o follow_email main.go

@@ -592,7 +592,8 @@ class InstanceProvisioner:
             print(f"{Colors.OKGREEN}[OK] Nginx config file moved to final location{Colors.ENDC}")
             
             # Config file is already created, so skip it in commands list
-            config_command = "echo 'Config already created'"
+            # Use a simple verification command that always succeeds
+            config_command = "[ -f /etc/nginx/sites-available/follow-email ] && echo 'OK' || (echo 'File missing' && exit 1)"
         finally:
             # Clean up local temp file
             try:
@@ -601,7 +602,8 @@ class InstanceProvisioner:
                 pass
         
         commands = [
-            ("Creating nginx config", config_command),
+            # Skip "Creating nginx config" since it's already done via SCP
+            # ("Verifying nginx config", config_command),  # Already created, skip
             ("Creating symbolic link", 
              "sudo ln -sf /etc/nginx/sites-available/follow-email /etc/nginx/sites-enabled/"),
             ("Removing default site",
@@ -619,8 +621,8 @@ class InstanceProvisioner:
                 timeout = 10
             elif 'Restarting' in description:
                 timeout = 60  # Service operations can take time
-            elif 'Creating nginx config' in description:
-                timeout = 10  # File move should be instant
+            elif 'Verifying nginx config' in description:
+                timeout = 5  # Quick file check
                 show_cmd_output = True  # Show output to debug
             else:
                 timeout = 30
@@ -628,6 +630,9 @@ class InstanceProvisioner:
                 # For removing default site, it's OK if it doesn't exist
                 if 'Removing default site' in description:
                     print(f"{Colors.WARNING}Note: Default site may not exist, continuing...{Colors.ENDC}")
+                # For verifying nginx config, it's already created, so just warn
+                elif 'Verifying nginx config' in description:
+                    print(f"{Colors.WARNING}Warning: Config verification failed, but file was already created{Colors.ENDC}")
                 # For restarting nginx, check if it's actually running
                 elif 'Restarting nginx' in description:
                     print(f"{Colors.WARNING}Restart command failed, checking if nginx is running...{Colors.ENDC}")

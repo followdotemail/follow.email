@@ -26,7 +26,7 @@ To use the automated deployment:
 
 For Kubernetes deployment, see the configurations in:
 ```
-apps/backend/deployments/
+apps/hermes/deployments/
 ```
 
 This includes:

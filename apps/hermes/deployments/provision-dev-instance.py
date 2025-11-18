@@ -34,6 +34,7 @@ Usage:
     python provision-dev-instance.py --action setup-only
 """
 
+from dis import show_code
 import os
 import sys
 import time
@@ -586,7 +587,7 @@ class InstanceProvisioner:
             # Move file to final location immediately after SCP
             print(f"{Colors.OKBLUE}Moving nginx config to final location...{Colors.ENDC}")
             move_command = "sudo mv -f /tmp/nginx-config.tmp /etc/nginx/sites-available/follow-email && sudo chmod 644 /etc/nginx/sites-available/follow-email"
-            if not self.run_ssh_command(move_command, show_output=True, timeout=10):
+            if not self.run_ssh_command(move_command, show_output=True, timeout=60):
                 print(f"{Colors.FAIL}Failed to move nginx config file{Colors.ENDC}")
                 return False
             print(f"{Colors.OKGREEN}[OK] Nginx config file moved to final location{Colors.ENDC}")
@@ -782,6 +783,76 @@ class InstanceProvisioner:
         print(f"\n{Colors.OKGREEN}[OK] Application started successfully!{Colors.ENDC}\n")
         return True
 
+    def setup_ssl_certificate(self, record_name: str) -> bool:
+        """SSL certificate installation using Let's Encrypt Certbot"""
+        print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+        print(f"{Colors.HEADER}Setting up SSL Certificate from - Let's Encrypt Certbot for {record_name}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
+
+        domain = f"{record_name}.follow.email"
+
+        commands = [
+            ("Installing certbot", "sudo apt-get install -y certbot python3-certbot-nginx"),
+            ("Obtaining SSL certificate", f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos --email admin@follow.email --redirect"),
+        ]
+
+        for description, command in commands:
+            print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
+            if 'installing' in description.lower():
+                timeout = 300
+                show_cmd_output = False
+            else:
+                timeout = 120
+                show_cmd_output = True
+
+            if not self.run_ssh_command(command, show_output=show_cmd_output, timeout=timeout):
+                # If certbot fails, it might be because DNS hasn't propagated yet
+                if 'obtaining ssl certificate' in description.lower():
+                    print(f"{Colors.WARNING}Warning: SSL certificate installation failed{Colors.ENDC}")
+                    print(f"{Colors.WARNING}This might be because DNS hasn't propagated yet.{Colors.ENDC}")
+                    print(f"{Colors.WARNING}You can run this manually later: sudo certbot --nginx -d {domain}{Colors.ENDC}")
+                    print(f"{Colors.WARNING}Make sure port 80 is accessible and DNS points to this server.{Colors.ENDC}")
+                    return False
+                else:
+                     print(f"{Colors.FAIL}[ERROR] Failed: {description}{Colors.ENDC}")
+                     return False
+                
+            print(f"{Colors.OKGREEN}[OK] {description} completed{Colors.ENDC}")
+        
+        # Verify certificate was installed successfully
+        print(f"\n{Colors.OKBLUE}Verifying SSL certificate...{Colors.ENDC}")
+
+        cert_check = f"sudo certbot certificates | grep -A2 '{domain}' || echo 'Certificate not found!'"
+        self.run_ssh_command(cert_check, show_output=True, timeout=30)
+
+        # Test auto renewal
+        print(f"\n{Colors.OKBLUE}Testing certificate auto-renewal...{Colors.ENDC}")
+        renewal_test = f"sudo certbot renew --dry-run"
+        if self.run_ssh_command(renewal_test, show_output=True, timeout=60):
+            print(f"{Colors.OKGREEN}[OK] Auto-renewal test passed{Colors.ENDC}")
+        else:
+            print(f"{Colors.WARNING}Warning: Auto-renewal test failed, but certificate is installed{Colors.ENDC}")
+
+        # Verify nginx config with SSL
+        print(f"\n{Colors.OKBLUE}Verifying nginx SSL configuration...{Colors.ENDC}")
+        nginx_test = "sudo nginx -t"
+        if self.run_ssh_command(nginx_test, show_output=True, timeout=10):
+            print(f"{Colors.OKGREEN}[OK] Nginx SSL configuration is valid{Colors.ENDC}")
+        else:
+            print(f"{Colors.WARNING}Warning: Nginx configuration test failed{Colors.ENDC}")
+        
+        # Reload nginx to apply SSL config
+        print(f"\n{Colors.OKBLUE}Reloading nginx to apply SSL configuration...{Colors.ENDC}")
+        reload_cmd = "sudo systemctl reload nginx && sleep 2 && sudo systemctl is-active --quiet nginx && echo 'Nginx is active' && sudo systemctl status nginx"
+        if self.run_ssh_command(reload_cmd, show_output=True, timeout=30):
+            print(f"{Colors.OKGREEN}[OK] Nginx reloaded successfully{Colors.ENDC}")
+        else:
+            print(f"{Colors.WARNING}Warning: Nginx reload failed, but continuing...{Colors.ENDC}")
+        
+        print(f"\n{Colors.OKGREEN}[OK] SSL certificate installed successfully!{Colors.ENDC}\n")
+        print(f"{Colors.WARNING}IMPORTANT: Make sure your Excloud security group allows HTTPS (port 443) traffic!{Colors.ENDC}")
+        print(f"{Colors.WARNING}Security Group ID: {os.getenv('EXCLOUD_SECURITY_GROUP_ID', 'Check your Excloud console')}{Colors.ENDC}\n")
+        return True
 
 def main():
     parser = argparse.ArgumentParser(description='Provision Excloud development instance for follow.email')
@@ -946,6 +1017,10 @@ def main():
             if not provisioner.setup_nginx(record_name):
                 print(f"{Colors.FAIL}Failed to setup nginx{Colors.ENDC}")
                 sys.exit(1)
+
+            if not provisioner.setup_ssl_certificate(record_name):
+                print(f"{Colors.WARNING}Warning: SSL certificate installation failed or skipped{Colors.ENDC}")
+                print(f"{Colors.WARNING}You can install it manually later when DNS has propagated{Colors.ENDC}")
             
             if not provisioner.deploy_application(args.github_repo):
                 print(f"{Colors.FAIL}Failed to deploy application{Colors.ENDC}")
@@ -977,7 +1052,7 @@ def main():
             print(f"  Check status: ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose ps'")
             print(f"  View logs:    ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose logs -f backend'")
             print(f"  Restart app:  ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose restart backend'")
-            print(f"  Test API:     curl http://{record_name}.follow.email/api/v1/health")
+            print(f"  Test API:     curl https://{record_name}.follow.email/api/v1/health")
             print(f"\n{Colors.OKGREEN}[OK] Follow.Email Backend is now running on {record_name}.follow.email!{Colors.ENDC}\n")
         
         elif args.action == 'destroy':
@@ -1009,6 +1084,7 @@ def main():
             
             provisioner.install_dependencies()
             provisioner.setup_nginx(record_name)
+            provisioner.setup_ssl_certificate(record_name)
             provisioner.deploy_application(args.github_repo)
             provisioner.setup_env_file()
             provisioner.start_application()

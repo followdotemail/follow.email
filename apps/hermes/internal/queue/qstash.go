@@ -96,14 +96,17 @@ func (q *QStashService) publishMessage(ctx context.Context, msgType MessageType,
 	// Construct the webhook URL based on message type
 	// Convert message type to match webhook route format (underscore to hyphen)
 	routeName := string(msgType)
-	if msgType == EmailSyncType {
-		routeName = "email-sync"
-	} else if msgType == EmailAnalysisType {
-		routeName = "email-analysis"
-	} else if msgType == FollowUpType {
-		routeName = "follow-up"
-	} else if msgType == ScheduledTaskType {
-		routeName = "scheduled-task"
+	switch msgType {
+		case EmailSyncType:
+			routeName = "email-sync"
+		case EmailAnalysisType:
+			routeName = "email-analysis"
+		case FollowUpType:
+			routeName = "follow-up"
+		case ScheduledTaskType:
+			routeName = "scheduled-task"
+		default:
+			return fmt.Errorf("invalid message type: %s", msgType)
 	}
 	webhookURL := fmt.Sprintf("%s/%s", q.baseURL, routeName)
 

@@ -41,7 +41,7 @@ import time
 import json
 import argparse
 import subprocess
-import base64
+from datetime import datetime
 from typing import Dict, Optional, List
 import requests
 from dotenv import load_dotenv
@@ -50,7 +50,7 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(__file__), '../../../.env')
 load_dotenv(env_path)
 print(f"Loading environment from: {os.path.abspath(env_path)}")
-
+webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
 
 class Colors:
     """ANSI color codes for terminal output"""
@@ -63,6 +63,45 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
+
+class DiscordNotifier:
+    """Sends notifications to a Discord channel"""
+
+    def __init__(self) -> None:
+        self.webhook_url = webhook_url or os.getenv('DISCORD_WEBHOOK_URL')
+
+    def send_notification(self, title: str, description: str, color: int = 0x00ff00, fields: List[Dict] = None):
+        """send an embedded message to Discord"""
+        if not self.webhook_url:
+            return
+
+        payload = {
+            "embeds": [
+                {
+                    "title": title,
+                    "description": description,
+                    "color": color,
+                    "fields": fields or [],
+                    "footer": {
+                        "text": f"Follow.Email Provisioning • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    }
+                }
+            ]
+        }
+
+        try:
+            requests.post(self.webhook_url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"{Colors.FAIL}[ERROR] Failed to send notification: {e}{Colors.ENDC}")
+
+    def success(self, title: str, description: str, fields: List[Dict] = None):
+        self.send_notification(title=title, description=description, color=0x00ff00, fields=fields)
+
+    def error(self, title: str, description: str, fields: List[Dict] = None):
+        self.send_notification(title=title, description=description, color=0xff0000, fields=fields)
+
+    def info(self, title: str, description: str, fields: List[Dict] = None):
+        self.send_notification(title=title, description=description, color=0x0000ff, fields=fields)
 
 class ExcloudInstanceManager:
     """Manages Excloud instance provisioning"""
@@ -893,6 +932,8 @@ def main():
     )
     
     args = parser.parse_args()
+
+    discord = DiscordNotifier()
     
     # Handle troubleshoot action
     if args.troubleshoot:
@@ -944,6 +985,7 @@ def main():
     
     try:
         if args.action == 'create':
+            discord.info(title="Follow.Email backend instance provisioning started", description=f"Started provisioning for **https://{args.record_name}.follow.email**")
             print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
             print(f"{Colors.HEADER}Follow.Email Backend Instance Provisioning{Colors.ENDC}")
             print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
@@ -1038,6 +1080,30 @@ def main():
                 print(f"{Colors.WARNING}Warning: Failed to start application automatically{Colors.ENDC}")
                 print(f"{Colors.WARNING}You can start it manually after provisioning{Colors.ENDC}")
             
+            success_msg = f"Follow.Email Backend is now running on **{record_name}.follow.email**"
+            discord.success(
+                title="Follow.Email backend instance provisioning complete",
+                description=success_msg,
+                fields=[
+                    {
+                        "name": "Application URL",
+                        "value":  f"https://{args.record_name}.follow.email",
+                        "inline": True
+                    },
+                    {
+                        "name": "IP Address",
+                        "value":  f"**{instance_ip}**",
+                        "inline": True
+                    },
+                    {
+                        "name": "VM ID",
+                        "value": f"**{vm_id}**",
+                        "inline": True
+                    },
+                    
+                ],
+            )
+            
             # Success!
             print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
             print(f"{Colors.OKGREEN}{'[OK] PROVISIONING COMPLETE!':^60}{Colors.ENDC}")
@@ -1053,7 +1119,7 @@ def main():
             print(f"  View logs:    ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose logs -f backend'")
             print(f"  Restart app:  ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose restart backend'")
             print(f"  Test API:     curl https://{record_name}.follow.email/api/v1/health")
-            print(f"\n{Colors.OKGREEN}[OK] Follow.Email Backend is now running on {record_name}.follow.email!{Colors.ENDC}\n")
+            print(f"\n{Colors.OKGREEN}[OK] {success_msg}{Colors.ENDC}\n")
         
         elif args.action == 'destroy':
             if not args.instance_id:
@@ -1068,7 +1134,10 @@ def main():
                 sys.exit(1)
             
             excloud = ExcloudInstanceManager()
-            excloud.delete_instance(vm_id)
+            if excloud.delete_instance(vm_id):
+                discord.success("Instance Destroyed", f"Instance **{vm_id}** has been terminated successfully.")
+            else:
+                discord.error("Destruction Failed", f"Failed to terminate instance **{vm_id}**.")
         
         elif args.action == 'setup-only':
             # Read instance info

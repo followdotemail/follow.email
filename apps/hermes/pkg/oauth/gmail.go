@@ -64,7 +64,7 @@ func NewGmailOAuthService(clientID, clientSecret, redirectURL string) *GmailOAut
 
 // GetAuthURL generates the Gmail OAuth authorization URL
 func (s *GmailOAuthService) GetAuthURL(state string) string {
-	return s.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	return s.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 }
 
 // ExchangeCode exchanges authorization code for access token

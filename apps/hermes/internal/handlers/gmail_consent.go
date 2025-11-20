@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,16 +14,17 @@ import (
 	"follow-email-backend/internal/models"
 	"follow-email-backend/internal/queue"
 	"follow-email-backend/pkg/oauth"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 // GmailConsentHandler handles Gmail consent and OAuth operations
 type GmailConsentHandler struct {
-	config           *config.Config
-	db               *gorm.DB
+	config            *config.Config
+	db                *gorm.DB
 	gmailOAuthService *oauth.GmailOAuthService
-	qstashService    *queue.QStashService
+	qstashService     *queue.QStashService
 }
 
 // GmailConsentRequest represents a request to initiate Gmail consent
@@ -34,9 +34,9 @@ type GmailConsentRequest struct {
 
 // GmailConsentResponse represents the response for Gmail consent initiation
 type GmailConsentResponse struct {
-	AuthURL   string `json:"auth_url"`
-	State     string `json:"state"`
-	Message   string `json:"message"`
+	AuthURL string `json:"auth_url"`
+	State   string `json:"state"`
+	Message string `json:"message"`
 }
 
 // GmailCallbackRequest represents the OAuth callback parameters
@@ -60,10 +60,10 @@ type GmailStatusResponse struct {
 // NewGmailConsentHandler creates a new Gmail consent handler
 func NewGmailConsentHandler(cfg *config.Config, db *gorm.DB, gmailOAuthService *oauth.GmailOAuthService, qstashService *queue.QStashService) *GmailConsentHandler {
 	return &GmailConsentHandler{
-		config:           cfg,
-		db:               db,
+		config:            cfg,
+		db:                db,
 		gmailOAuthService: gmailOAuthService,
-		qstashService:    qstashService,
+		qstashService:     qstashService,
 	}
 }
 
@@ -94,7 +94,7 @@ func (h *GmailConsentHandler) InitiateConsent(c *gin.Context) {
 
 	// Get authorization URL
 	authURL := h.gmailOAuthService.GetAuthURL(state)
-	
+
 	// Fix Unicode encoding issue: replace \u0026 with & for proper URL format
 	authURL = strings.ReplaceAll(authURL, "\\u0026", "&")
 
@@ -142,6 +142,9 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 		return
 	}
 
+	DebugTextPrint(fmt.Sprintf("Printing token info: %+v", tokenInfo))
+	DebugTextPrint(fmt.Sprintf("\n\nPrinting refresh token: %v & scope: %v", tokenInfo.RefreshToken, tokenInfo.Scope))
+
 	// Get user info from Google
 	userInfo, err := h.gmailOAuthService.GetUserInfo(ctx, tokenInfo.AccessToken)
 	if err != nil {
@@ -149,24 +152,13 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 		return
 	}
 
-	// Find user by email (since we don't have user_id in callback)
+	// Find user by email. If user does not exists, redirect to sign up page.
 	var user models.User
-	result := h.db.Where("email = ?", userInfo.Email).First(&user)
+	result := h.db.Select("id", "email").Where("email = ?", userInfo.Email).First(&user)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
-			// Create a new user if one doesn't exist
-			user = models.User{
-				Email:     userInfo.Email,
-				Name:      userInfo.Name,
-				ImageURL:  &userInfo.Picture,
-				Provider:  "google",
-				IsActive:  true,
-			}
-			
-			if err := h.db.Create(&user).Error; err != nil {
-				h.redirectWithError(c, req.State, "Failed to create user", err.Error())
-				return
-			}
+			h.redirectWithError(c, req.State, "User not found", "Please sign up or login with this email address first.")
+			return
 		} else {
 			h.redirectWithError(c, req.State, "Database error", result.Error.Error())
 			return
@@ -182,9 +174,10 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 	// Store or update OAuth token
 	now := time.Now()
 	var oauthToken models.OAuthToken
-	tokenResult := h.db.Where("user_id = ? AND provider = ?", user.ID, "gmail").First(&oauthToken)
-
+	tokenResult := h.db.Select("id", "user_id", "provider", "access_token", "refresh_token", "token_type", "expires_at", "scope").Where("user_id = ? AND provider = ?", user.ID, "gmail").First(&oauthToken)
+	DebugTextPrint(fmt.Sprintf("Printing token result: %+v", tokenResult))
 	if tokenResult.Error == gorm.ErrRecordNotFound {
+		DebugTextPrint("Token not found, creating new token record")
 		// Create new token record
 		oauthToken = models.OAuthToken{
 			UserID:       user.ID,
@@ -203,13 +196,21 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 		}
 	} else {
 		// Update existing token
-		oauthToken.AccessToken = tokenInfo.AccessToken
-		oauthToken.RefreshToken = tokenInfo.RefreshToken
-		oauthToken.TokenType = tokenInfo.TokenType
-		oauthToken.ExpiresAt = tokenInfo.ExpiresAt
-		oauthToken.Scope = tokenInfo.Scope
-		oauthToken.UpdatedAt = now
-		if err := h.db.Save(&oauthToken).Error; err != nil {
+		updates := map[string]interface{}{
+			"access_token": tokenInfo.AccessToken,
+			"token_type":   tokenInfo.TokenType,
+			"expires_at":   tokenInfo.ExpiresAt,
+			"scope":        tokenInfo.Scope,
+			"updated_at":   now,
+		}
+
+		// Only include refresh_token if it's not empty
+		if tokenInfo.RefreshToken != "" {
+			updates["refresh_token"] = tokenInfo.RefreshToken
+		}
+
+		// Use Updates to only modify specified fields
+		if err := h.db.Model(&oauthToken).Updates(updates).Error; err != nil {
 			h.redirectWithError(c, req.State, "Failed to update OAuth token", err.Error())
 			return
 		}
@@ -217,8 +218,8 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 
 	// Update user consent status
 	var gmailConsent models.GmailConsent
-	consentResult := h.db.Where("user_id = ?", user.ID).First(&gmailConsent)
-	
+	consentResult := h.db.Select("id", "user_id").Where("user_id = ?", user.ID).First(&gmailConsent)
+
 	if consentResult.Error == gorm.ErrRecordNotFound {
 		// Create new consent record
 		gmailConsent = models.GmailConsent{
@@ -238,22 +239,25 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 		return
 	} else {
 		// Update existing consent record
-		gmailConsent.GmailConsent = true
-		gmailConsent.GmailConsentDate = &now
-		gmailConsent.GmailSyncEnabled = true
-		gmailConsent.UpdatedAt = now
-		if err := h.db.Save(&gmailConsent).Error; err != nil {
+		updates := map[string]interface{}{
+			"gmail_consent":      true,
+			"gmail_consent_date": &now,
+			"gmail_sync_enabled": true,
+			"updated_at":         now,
+		}
+
+		if err := h.db.Model(&gmailConsent).Updates(updates).Error; err != nil {
 			h.redirectWithError(c, req.State, "Failed to update consent record", err.Error())
 			return
 		}
 	}
 
-	// Update user timestamp
-	user.UpdatedAt = now
-	if err := h.db.Save(&user).Error; err != nil {
-		h.redirectWithError(c, req.State, "Failed to update user", err.Error())
-		return
-	}
+	// Update user timestamp - NOT REQUIRED AS OF NOW (AI GENERATED CODE)
+	// user.UpdatedAt = now
+	// if err := h.db.Save(&user).Error; err != nil {
+	// 	h.redirectWithError(c, req.State, "Failed to update user", err.Error())
+	// 	return
+	// }
 
 	// Automatically trigger email sync for first-time consent
 	if h.qstashService != nil {
@@ -265,9 +269,9 @@ func (h *GmailConsentHandler) HandleCallback(c *gin.Context) {
 		// Queue the email sync job asynchronously
 		if err := h.qstashService.PublishEmailSync(context.Background(), syncMessage); err != nil {
 			// Log the error but don't fail the consent process
-			log.Printf("Warning: Failed to queue initial email sync for user %s: %v", user.ID, err)
+			DebugWarningTextPrint(fmt.Sprintf("Warning: Failed to queue initial email sync for user %s: %v", user.ID, err))
 		} else {
-			log.Printf("Successfully queued initial email sync for user %s", user.ID)
+			DebugSuccessTextPrint(fmt.Sprintf("Successfully queued initial email sync for user %s", user.ID))
 		}
 	}
 
@@ -363,7 +367,7 @@ func (h *GmailConsentHandler) RevokeConsent(c *gin.Context) {
 		// Development mode: return success message
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Development mode - consent revocation simulated",
-			"note": "In production, this would require authentication and revoke actual tokens",
+			"note":    "In production, this would require authentication and revoke actual tokens",
 		})
 		return
 	}
@@ -379,7 +383,7 @@ func (h *GmailConsentHandler) RevokeConsent(c *gin.Context) {
 	// Delete OAuth token
 	if err := h.db.Where("user_id = ? AND provider = ?", user.ID, "gmail").Delete(&models.OAuthToken{}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to delete OAuth token",
+			"error":   "Failed to delete OAuth token",
 			"details": err.Error(),
 		})
 		return
@@ -388,7 +392,7 @@ func (h *GmailConsentHandler) RevokeConsent(c *gin.Context) {
 	// Update Gmail consent status
 	var gmailConsent models.GmailConsent
 	consentResult := h.db.Where("user_id = ?", user.ID).First(&gmailConsent)
-	
+
 	if consentResult.Error == nil {
 		// Update existing consent record
 		now := time.Now()
@@ -401,7 +405,7 @@ func (h *GmailConsentHandler) RevokeConsent(c *gin.Context) {
 
 		if err := h.db.Save(&gmailConsent).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to update consent record",
+				"error":   "Failed to update consent record",
 				"details": err.Error(),
 			})
 			return
@@ -413,14 +417,14 @@ func (h *GmailConsentHandler) RevokeConsent(c *gin.Context) {
 	user.UpdatedAt = now
 	if err := h.db.Save(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to update user",
+			"error":   "Failed to update user",
 			"details": err.Error(),
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Gmail access revoked successfully",
+		"message":    "Gmail access revoked successfully",
 		"revoked_at": now,
 	})
 }
@@ -445,9 +449,9 @@ func (h *GmailConsentHandler) redirectWithSuccess(c *gin.Context, returnURL, use
 	if returnURL == "" {
 		// Fallback: return JSON if no return URL provided
 		c.JSON(http.StatusOK, gin.H{
-			"message": "Gmail access granted successfully",
+			"message":    "Gmail access granted successfully",
 			"user_email": userEmail,
-			"status": "success",
+			"status":     "success",
 		})
 		return
 	}
@@ -457,10 +461,10 @@ func (h *GmailConsentHandler) redirectWithSuccess(c *gin.Context, returnURL, use
 	if err != nil {
 		// If URL parsing fails, return JSON
 		c.JSON(http.StatusOK, gin.H{
-			"message": "Gmail access granted successfully",
+			"message":    "Gmail access granted successfully",
 			"user_email": userEmail,
-			"status": "success",
-			"note": "Invalid return URL provided",
+			"status":     "success",
+			"note":       "Invalid return URL provided",
 		})
 		return
 	}
@@ -479,13 +483,13 @@ func (h *GmailConsentHandler) redirectWithSuccess(c *gin.Context, returnURL, use
 // redirectWithError redirects to frontend with error parameters
 func (h *GmailConsentHandler) redirectWithError(c *gin.Context, state, errorMsg, details string) {
 	returnURL := h.extractReturnURL(state)
-	
+
 	if returnURL == "" {
 		// Fallback: return JSON if no return URL provided
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": errorMsg,
+			"error":   errorMsg,
 			"details": details,
-			"status": "error",
+			"status":  "error",
 		})
 		return
 	}
@@ -495,10 +499,10 @@ func (h *GmailConsentHandler) redirectWithError(c *gin.Context, state, errorMsg,
 	if err != nil {
 		// If URL parsing fails, return JSON
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": errorMsg,
+			"error":   errorMsg,
 			"details": details,
-			"status": "error",
-			"note": "Invalid return URL provided",
+			"status":  "error",
+			"note":    "Invalid return URL provided",
 		})
 		return
 	}

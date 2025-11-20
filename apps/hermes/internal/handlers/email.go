@@ -23,6 +23,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// NEED TO CHECK THIS CODE MANUALLY
 // EmailHandler handles email-related HTTP requests
 type EmailHandler struct {
 	db                *gorm.DB
@@ -34,6 +35,7 @@ type EmailHandler struct {
 	gmailSyncService  *services.GmailSyncService
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // NewEmailHandler creates a new email handler
 func NewEmailHandler(
 	db *gorm.DB,
@@ -55,6 +57,7 @@ func NewEmailHandler(
 	}
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // Helper function to get database user UUID from Clerk ID
 func (h *EmailHandler) getUserUUIDFromClerkID(clerkID string) (uuid.UUID, error) {
 	var user models.User
@@ -67,6 +70,7 @@ func (h *EmailHandler) getUserUUIDFromClerkID(clerkID string) (uuid.UUID, error)
 	return user.ID, nil
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // SyncEmailsRequest represents the request body for email synchronization
 type SyncEmailsRequest struct {
 	// Email provider (google, microsoft)
@@ -86,6 +90,7 @@ type SyncEmailsRequest struct {
 	DeltaToken string `json:"delta_token,omitempty"`
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // AnalyzeEmailRequest represents the request body for email analysis
 type AnalyzeEmailRequest struct {
 	// Email subject
@@ -101,6 +106,7 @@ type AnalyzeEmailRequest struct {
 	Body string `json:"body" binding:"required"`
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // GenerateResponseRequest represents the request body for response generation
 type GenerateResponseRequest struct {
 	// Original email subject
@@ -120,6 +126,7 @@ type GenerateResponseRequest struct {
 	UserContext string `json:"user_context,omitempty"`
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // ProcessEmailContentRequest represents a request to sanitize raw email HTML for rendering.
 type ProcessEmailContentRequest struct {
 	HTML             string `json:"html" binding:"required"`
@@ -127,12 +134,14 @@ type ProcessEmailContentRequest struct {
 	Theme            string `json:"theme"`
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // ProcessEmailContentResponse represents the sanitized HTML response.
 type ProcessEmailContentResponse struct {
 	ProcessedHTML    string `json:"processed_html"`
 	HasBlockedImages bool   `json:"has_blocked_images"`
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // SyncEmails handles email synchronization requests
 func (h *EmailHandler) SyncEmails(c *gin.Context) {
 	clerkID, exists := c.Get("user_id")
@@ -161,16 +170,20 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 	}
 
 	// Validate that user has connected their account for the provider
-	if req.Provider == "google" {
-		_, err := h.gmailTokenService.GetValidToken(c.Request.Context(), userID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "No valid Gmail token found. Please connect your Gmail account first."})
+	switch req.Provider {
+		case "google":
+			_, err := h.gmailTokenService.GetValidToken(c.Request.Context(), userID)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "No valid Gmail token found. Please connect your Gmail account first."})
+				return
+			}
+		case "microsoft":
+			// TODO: Implement Microsoft token validation
+			c.JSON(http.StatusNotImplemented, gin.H{"error": "Microsoft provider not yet implemented"})
 			return
-		}
-	} else if req.Provider == "microsoft" {
-		// TODO: Implement Microsoft token validation
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "Microsoft provider not yet implemented"})
-		return
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid provider. Supported providers: google, microsoft"})
+			return
 	}
 
 	// Queue the email sync job using QStash
@@ -198,6 +211,7 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 	})
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // GetSyncStatus handles sync status requests
 func (h *EmailHandler) GetSyncStatus(c *gin.Context) {
 	clerkID, exists := c.Get("user_id")
@@ -237,6 +251,7 @@ func (h *EmailHandler) GetSyncStatus(c *gin.Context) {
 	})
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // AnalyzeEmail handles email analysis requests
 func (h *EmailHandler) AnalyzeEmail(c *gin.Context) {
 	userID, exists := c.Get("user_id")
@@ -269,6 +284,7 @@ func (h *EmailHandler) AnalyzeEmail(c *gin.Context) {
 	})
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // GenerateResponse handles response generation requests
 func (h *EmailHandler) GenerateResponse(c *gin.Context) {
 	userID, exists := c.Get("user_id")
@@ -302,6 +318,7 @@ func (h *EmailHandler) GenerateResponse(c *gin.Context) {
 	})
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // ScheduleFollowUp handles follow-up scheduling requests
 func (h *EmailHandler) ScheduleFollowUp(c *gin.Context) {
 	userID, exists := c.Get("user_id")
@@ -347,6 +364,7 @@ func (h *EmailHandler) ScheduleFollowUp(c *gin.Context) {
 	})
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // ProcessEmailContent sanitizes Gmail HTML based on client preferences.
 func (h *EmailHandler) ProcessEmailContent(c *gin.Context) {
 	var req ProcessEmailContentRequest
@@ -528,6 +546,7 @@ type PaginationInfo struct {
 	HasPrev bool `json:"has_prev"`
 }
 
+// NEED TO CHECK THIS CODE MANUALLY
 // GetEmails handles email query requests with filtering and pagination
 func (h *EmailHandler) GetEmails(c *gin.Context) {
 	// Get user ID from context (set by auth middleware)
@@ -697,6 +716,7 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// MANUALLY CHECKED ✅
 // GetEmailByID returns email metadata together with live content and attachments
 func (h *EmailHandler) GetEmailByID(c *gin.Context) {
 	// Get user ID from context (set by auth middleware)

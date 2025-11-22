@@ -7,11 +7,15 @@ This guide will walk you through the process of setting up and running the Follo
 1. [Prerequisites](#prerequisites)
 2. [Environment Configuration](#environment-configuration)
 3. [Setup Methods](#setup-methods)
-   - [Docker Setup (Recommended)](#docker-setup-recommended)
-   - [Manual Setup](#manual-setup)
+   - [Local Development (Without Docker)](#local-development-without-docker)
+   - [Docker Workflow](#docker-workflow)
 4. [Running the Application](#running-the-application)
 5. [Deployment](#deployment)
+   - [Excloud Provisioning Script](#excloud-provisioning-script)
+   - [Docker Production Deployment](#docker-production-deployment)
 6. [Troubleshooting](#troubleshooting)
+7. [Getting Help](#getting-help)
+8. [Quick Reference](#quick-reference)
 
 ## Prerequisites
 
@@ -21,15 +25,19 @@ Before you begin, ensure you have the following installed:
 
 - **Node.js** >= 18.0.0
 - **npm** >= 9.0.0
-- **Go** >= 1.24.0
-- **Docker** and **Docker Compose** (for Docker setup)
-- **PostgreSQL** >= 13 (for manual setup)
-- **Redis** >= 6 (for manual setup)
+- **Go** >= 1.23.0
+- **Docker Desktop** (includes Docker Compose) — required for provisioning, CI parity, and validating container builds. Optional for day-to-day local runs but strongly recommended.
+
+### Additional Tooling
+
+- **Python** >= 3.9 (needed for `apps/hermes/deployments/provision-dev-instance.py`)
+- **psql CLI** (optional, for inspecting the managed Neon database)
 
 ### Required Accounts & API Keys
 
+- **Neon** (or another managed Postgres provider) for the primary database connection string
 - **Clerk** account for authentication
-- **Google Cloud Console** account for Gmail API
+- **Google Cloud Console** project with Gmail API enabled
 - **AWS** account for S3 storage (optional)
 - **Google AI** account for Gemini API (optional)
 - **Upstash** account for QStash (optional)
@@ -65,11 +73,8 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 PORT=8080
 GIN_MODE=debug
 
-# Database
-DATABASE_URL=postgresql://username:password@localhost:5432/follow_email?sslmode=disable
-
-# Redis
-REDIS_URL=localhost:6379
+# Database (Neon / managed Postgres)
+DATABASE_URL=postgresql://username:password@your-neon-hostname/neondb?sslmode=require
 
 # Google OAuth
 GOOGLE_CLIENT_ID=your_google_client_id
@@ -81,17 +86,54 @@ See `env.example` for all available configuration options.
 
 ## Setup Methods
 
-### Docker Setup (Recommended)
+### Local Development (Without Docker)
 
-Docker provides an isolated and consistent environment for development and production.
+Use this path for day-to-day feature development on your workstation.
+
+#### 1. Install Dependencies
+
+- **Root workspace**
+  ```bash
+  npm install
+  ```
+- **Frontend**
+  ```bash
+  cd apps/frontend
+  npm install
+  cd ../..
+  ```
+- **Backend**
+  ```bash
+  cd apps/hermes
+  go mod download
+  go mod tidy
+  cd ../..
+  ```
+
+#### 2. Configure Remote Database Access
+
+- Set `DATABASE_URL` in `.env` to the Neon connection string (make sure `sslmode=require`).
+- (Optional) Verify connectivity:
+  ```bash
+  psql "$DATABASE_URL" -c '\dt'
+  ```
+
+#### 3. Database Schema
+
+- Backend migrations run automatically on start-up; files live in `apps/hermes/migrations/`.
+- No local PostgreSQL service is provisioned—use Neon branches for isolated testing if needed.
+
+### Docker Workflow
+
+Docker provides environment parity with the managed infrastructure and is required for release verification.
 
 #### 1. Install Docker
 
-Download and install Docker Desktop from [docker.com](https://www.docker.com/products/docker-desktop/)
+Download and install Docker Desktop from [docker.com](https://www.docker.com/products/docker-desktop/).
 
 #### 2. Configure Environment
 
-Make sure your `.env` file is properly configured (see above).
+Ensure your `.env` file is populated (see [Environment Configuration](#environment-configuration)).
 
 #### 3. Build and Start Services
 
@@ -119,62 +161,6 @@ npm run docker:logs
 # Stop all services
 npm run docker:down
 ```
-
-### Manual Setup
-
-If you prefer not to use Docker, follow these steps:
-
-#### 1. Install Dependencies
-
-**Root dependencies:**
-```bash
-npm install
-```
-
-**Frontend dependencies:**
-```bash
-cd apps/frontend
-npm install
-cd ../..
-```
-
-**Backend dependencies:**
-```bash
-cd apps/backend
-go mod download
-go mod tidy
-cd ../..
-```
-
-#### 2. Set Up Database
-
-**Create PostgreSQL database:**
-```sql
-CREATE DATABASE follow_email;
-```
-
-**Set up Redis:**
-```bash
-# Install Redis (Ubuntu/Debian)
-sudo apt-get install redis-server
-
-# Start Redis
-sudo systemctl start redis
-
-# Verify Redis is running
-redis-cli ping
-```
-
-#### 3. Configure Database URL
-
-Update your `.env` file with the correct database connection string:
-```env
-DATABASE_URL=postgresql://your_user:your_password@localhost:5432/follow_email?sslmode=disable
-```
-
-#### 4. Run Database Migrations
-
-Migrations run automatically when the backend starts. The migration files are in `apps/backend/migrations/`.
 
 ## Running the Application
 
@@ -224,121 +210,75 @@ npm run frontend:start
 **Backend:**
 ```bash
 npm run backend:build
-cd apps/backend
+cd apps/hermes
 ./follow_email
 ```
 
 ## Deployment
 
-### GitHub Actions Deployment
+### Excloud Provisioning Script
 
-The project includes a GitHub Actions workflow for automated deployment located at `.github/workflows/deploy.yml`.
+Use `apps/hermes/deployments/provision-dev-instance.py` to create and manage ephemeral or long-lived cloud instances. The script:
 
-#### 1. Configure GitHub Secrets
+1. Provisions an Excloud VM and attaches a public IP.
+2. Installs Docker, nginx, and supporting packages.
+3. Clones this repository, copies the root `.env`, and builds the backend Docker image.
+4. Updates the `api.follow.email` DNS record via Spaceship.
+5. Starts the backend container and verifies health checks.
+6. Persists VM metadata to `apps/hermes/deployments/instance-info.json` for subsequent operations.
 
-Go to your repository settings and add these secrets:
+**Prerequisites**
 
-- `SERVER_SSH_KEY` - Your SSH private key for the server
-- `SERVER_HOST` - Your server hostname or IP
-- `SERVER_USER` - SSH username (e.g., ubuntu)
+- Python 3.9+ and `pip install -r apps/hermes/deployments/requirements.txt`
+- SSH private key with access to the provisioned instance (defaults to `~/.ssh/id_ed25519`)
+- Root `.env` populated with:
+  - Excloud settings: `EXCLOUD_API_KEY`, `EXCLOUD_ZONE_ID`, `EXCLOUD_SUBNET_ID`, `EXCLOUD_PROJECT_ID`, `EXCLOUD_SECURITY_GROUP_ID`, `EXCLOUD_SSH_PUBKEY`
+  - Spaceship credentials: `SPACESHIP_API_KEY`, `SPACESHIP_API_SECRET`
+  - Application secrets including `DATABASE_URL` (Neon), Clerk, Google OAuth, etc.
 
-#### 2. Push to Master Branch
-
-The workflow automatically deploys when you push to the `master` or `main` branch.
-
-#### 3. How It Works
-
-The workflow will:
-1. SSH into your server
-2. Pull the latest code
-3. Build both backend (Go) and frontend (Next.js)
-4. Restart services (systemd for backend, PM2 for frontend)
-5. Restart Nginx
-6. Verify deployment status
-
-### Manual Deployment
-
-#### On Your Server
-
-1. **Clone the repository:**
-```bash
-cd /home/ubuntu/apps
-git clone <your-repo-url> follow.email
-cd follow.email
-```
-
-2. **Install dependencies:**
-```bash
-npm install
-cd apps/frontend && npm install && cd ../..
-cd apps/backend && go mod download && cd ../..
-```
-
-3. **Configure environment:**
-```bash
-cp env.example .env
-# Edit .env with your production values
-nano .env
-```
-
-4. **Build applications:**
-```bash
-npm run frontend:build
-npm run backend:build
-```
-
-5. **Set up systemd service (Backend):**
-
-Create `/etc/systemd/system/follow-email-backend.service`:
-
-```ini
-[Unit]
-Description=Follow Email Backend
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/apps/follow.email/apps/backend
-Environment="PATH=/usr/local/go/bin:/usr/bin:/bin"
-EnvironmentFile=/home/ubuntu/apps/follow.email/.env
-ExecStart=/home/ubuntu/apps/follow.email/apps/backend/follow_email
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-6. **Set up PM2 (Frontend):**
+**Create or Rebuild an Instance**
 
 ```bash
-npm install -g pm2
-cd apps/frontend
-pm2 start npm --name "follow-email-frontend" -- start
-pm2 save
-pm2 startup
+cd apps/hermes/deployments
+python provision-dev-instance.py --action create --record-name api --ssh-key ~/.ssh/id_ed25519
 ```
 
-7. **Configure Nginx:**
+**Other Useful Actions**
 
-Use the nginx configuration from `infra/nginx.conf` as a template.
+- Destroy instance:
+  ```bash
+  python provision-dev-instance.py --action destroy --instance-id <vm_id>
+  ```
+- Re-run setup against an existing VM (after manual changes):
+  ```bash
+  python provision-dev-instance.py --action setup-only --record-name api
+  ```
+- Troubleshoot failed deployments (requires `instance-info.json` and the VM ID):
+  ```bash
+  python provision-dev-instance.py --action create --instance-id <vm_id> --troubleshoot
+  ```
+  > `--action` remains mandatory even when troubleshooting; pass the last action you executed (typically `create`).
 
-```bash
-sudo cp infra/nginx.conf /etc/nginx/sites-available/follow-email
-sudo ln -s /etc/nginx/sites-available/follow-email /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
-```
+**Key Arguments**
+
+- `--action {create,destroy,setup-only}` (required)
+- `--instance-id` / `--vm-id` (required for `destroy`, used by `--troubleshoot`)
+- `--ssh-key` (path to private key, default `~/.ssh/id_ed25519`)
+- `--github-repo` (defaults to `https://github.com/followdotemail/follow.email.git`)
+- `--record-name` (DNS prefix, default `api`)
+- `--troubleshoot` (run diagnostics without provisioning a new VM)
 
 ### Docker Production Deployment
 
-For production with Docker:
+The provisioning script ultimately runs the Docker stack defined in `infra/docker-compose.yml` on the remote VM. If you need to manage it manually (for example, during debugging over SSH):
 
 ```bash
-# Use docker-compose
-cd infra
-docker-compose -f docker-compose.yml up -d
+cd /opt/follow.email/infra
+sudo docker compose up -d backend
+sudo docker compose logs -f backend
 ```
+
+The frontend container is not currently deployed in production; the backend is exposed through nginx on the host.
 
 ## Troubleshooting
 
@@ -354,21 +294,20 @@ npx kill-port 3000
 npx kill-port 8080
 ```
 
-#### Database Connection Failed
+#### Neon Database Connection Failed
 
-- Verify PostgreSQL is running: `sudo systemctl status postgresql`
-- Check database credentials in `.env`
-- Test connection: `psql -U username -d follow_email`
-
-#### Redis Connection Failed
-
-- Verify Redis is running: `sudo systemctl status redis`
-- Test connection: `redis-cli ping`
+- Confirm the Neon branch is online via the Neon console.
+- Check `DATABASE_URL` in `.env` (correct host, database name, user, and `sslmode=require`).
+- Test connectivity from your machine:
+  ```bash
+  psql "$DATABASE_URL" -c 'select now();'
+  ```
+- Ensure the Neon IP allowlist includes your current location or set the project to "trusted by default".
 
 #### Go Module Issues
 
 ```bash
-cd apps/backend
+cd apps/hermes
 go clean -modcache
 go mod tidy
 go mod download
@@ -415,7 +354,7 @@ If environment variables are not being read:
 If database migrations fail:
 
 1. Check database connectivity
-2. Verify migration files exist in `apps/backend/migrations/`
+2. Verify migration files exist in `apps/hermes/migrations/`
 3. Check migration logs in backend console
 
 ### SSL/HTTPS Setup
@@ -431,7 +370,7 @@ For production with HTTPS:
 ## Getting Help
 
 - Check the main [README.md](./README.md) for project overview
-- Review API documentation in `apps/backend/documents/`
+- Review API documentation in `apps/hermes/documents/`
 - Check Swagger UI at http://localhost:8080/swagger-ui/ when running
 
 ## Quick Reference
@@ -464,5 +403,5 @@ npm run docker:logs         # View logs
 
 ---
 
-**Last Updated**: October 2025
+**Last Updated**: November 2025
 

@@ -32,7 +32,7 @@ services:
   # Backend Service (Go)
   backend:
     build:
-      context: ../apps/backend
+      context: ../apps/hermes
       dockerfile: ../../infra/Dockerfile.backend
     container_name: follow-email-backend
     env_file:
@@ -59,7 +59,7 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - ENVIRONMENT=${ENVIRONMENT}
     volumes:
-      - ../apps/backend:/app
+      - ../apps/hermes:/app
     networks:
       - follow-email-network
     restart: unless-stopped

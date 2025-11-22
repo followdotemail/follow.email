@@ -1,22 +1,19 @@
 import { BASE_URL } from "@/constants/base-url";
 
-export async function checkUserSyncStatus(token: string) {
+export async function checkUserConsentStatus(token: string) {
   try {
-    const response = await fetch(
-      `${BASE_URL}/emails/sync/status?provider=gmail`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      }
-    );
+    const response = await fetch(`${BASE_URL}/auth/status`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const responseData = response.status === 200 ? await response.json() : null;
 
     return {
-      status: response.status,
-      isConnected: response.status === 200,
-      data: response.status === 200 ? await response.json() : null,
+      isConnected: responseData.gmail_consent,
     };
   } catch (error) {
     console.error("Error checking user sync status:", error);

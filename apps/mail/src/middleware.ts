@@ -11,15 +11,15 @@ const isPublicRoute = createRouteMatcher([
 
 export default clerkMiddleware(async (auth, request) => {
   const { userId } = await auth();
-  
+
   if (isPublicRoute(request)) {
     console.log(`Public route accessed: ${request.url}`);
-    
+
     // If user is authenticated and trying to access public routes, redirect to /mail/inbox
-    // if (userId) {
-    //   return NextResponse.redirect(new URL("/mail/inbox", request.url));
-    // }
-    
+    if (userId) {
+      return NextResponse.redirect(new URL("/mail", request.url));
+    }
+
     // Allow access without protection for auth routes
     return;
   } else {

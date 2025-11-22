@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { checkUserSyncStatus } from "@/server/api/user-status";
+import { checkUserConsentStatus } from "@/server/api/user-status";
 
 export default async function Mail() {
   const { getToken } = await auth();
@@ -10,7 +10,9 @@ export default async function Mail() {
     return redirect("/sign-in");
   }
 
-  const { isConnected } = await checkUserSyncStatus(token);
+  const { isConnected } = await checkUserConsentStatus(token);
 
-  return redirect(isConnected ? "/mail/inbox" : "/mail/onboarding");
+  console.log("isConnected", isConnected);
+
+  return redirect(isConnected === true ? "/mail/inbox" : "/mail/onboarding");
 }

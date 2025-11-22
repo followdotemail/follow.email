@@ -2,6 +2,7 @@
 
 import AppLogo from "@/components/app-logo";
 import { Button } from "@/components/ui/button";
+import { BASE_URL } from "@/constants/base-url";
 import { useAuth } from "@clerk/nextjs";
 
 import { LoaderCircle, Mail } from "lucide-react";
@@ -19,31 +20,31 @@ export default function OnboardingClient() {
     try {
       // Get the authentication token
       const token = await getToken();
-      
+
       if (!token) {
         throw new Error("Not authenticated");
       }
 
       console.log("Initiating Gmail consent with token:", token);
 
-      const response = await fetch(
-        "https://api.follow.email/api/v1/gmail/consent/initiate",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            return_url: `${window.location.origin}/mail`,
-          }),
-        }
-      );
+      const response = await fetch(`${BASE_URL}/gmail/consent/initiate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          return_url: `${window.location.origin}/mail`,
+        }),
+      });
 
       console.log("Gmail consent response:", response);
       console.log("Response status:", response.status);
 
-      // Get response as text first to handle multiple JSON objects
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
       const data = await response.json();
       console.log("Gmail consent data:", data);
 
@@ -52,7 +53,7 @@ export default function OnboardingClient() {
         console.log("Redirecting to auth URL:", data.auth_url);
         window.location.href = data.auth_url;
       } else {
-        throw new Error("No auth URL received from server");
+        throw new Error(data.message || "No auth URL received from server");
       }
     } catch (err) {
       setError(

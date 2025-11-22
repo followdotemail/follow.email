@@ -35,7 +35,7 @@ export function EmailPreview({
   }, [height]);
 
   return (
-    <div className={cn("w-full space-y-4", className)}>
+    <div className={cn("w-full space-y-4 bg-black", className)}>
       <div className="flex w-full justify-center">
         <div
           className="overflow-hidden"
@@ -48,7 +48,7 @@ export function EmailPreview({
             sandbox="allow-same-origin"
             srcDoc={html}
             style={{ width: "100%", height }}
-            className="block bg-card"
+            className="block bg-black"
             onLoad={updateHeight}
           />
         </div>

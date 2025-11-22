@@ -17,7 +17,25 @@ import { MailDisplay } from "@/components/mail/mail-display";
 import { MailList } from "@/components/mail/mail-list";
 import { Sidebar } from "@/components/mail/sidebar";
 import { useMail } from "@/store/use-mail";
-import { type Mail } from "@/constants/mail-data";
+// Define the real email data structure
+interface EmailData {
+  id: string;
+  clerk_id: string;
+  message_id: string;
+  thread_id: string;
+  subject: string;
+  from_email: string;
+  from_name: string;
+  to_emails: string;
+  cc_emails: string;
+  bcc_emails: string;
+  updated_at: string;
+  is_read: boolean;
+  is_important: boolean;
+  has_attachments: boolean;
+  labels: string;
+  last_sync_at: string;
+}
 import {
   Sheet,
   SheetContent,
@@ -49,7 +67,7 @@ interface MailProps {
     email: string;
     icon: React.ReactNode;
   }[];
-  mails: Mail[];
+  mails: EmailData[];
   defaultLayout: number[] | undefined;
   defaultCollapsed?: boolean;
   navCollapsedSize: number;
@@ -128,7 +146,7 @@ export function Mail({
   const [isNavOpen, setIsNavOpen] = React.useState(false);
   const [emailCategory, setEmailCategory] = React.useState("primary");
 
-  const selectedMail = mails.find((item) => item.id === mail.selected) || null;
+  const selectedMail: EmailData | null = mails.find((item) => item.id === mail.selected) || null;
 
   return (
     <TooltipProvider delayDuration={0}>

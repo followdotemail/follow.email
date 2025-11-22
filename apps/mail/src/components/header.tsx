@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import React from "react";
 import { cn } from "@/lib/utils";
 import AppLogo from "./app-logo";
-import { useAuth, useSession } from "@clerk/nextjs";
+import { useAuth } from "@clerk/nextjs";
 
 const menuItems = [
   { name: "Features", href: "#link" },
@@ -17,28 +17,7 @@ const menuItems = [
 export const HeroHeader = () => {
   const [menuState, setMenuState] = React.useState(false);
   const [isScrolled, setIsScrolled] = React.useState(false);
-  const { isLoaded, isSignedIn, getToken, sessionId } = useAuth();
-  const { session } = useSession();
-
-  console.log("session:", session);
-
-  React.useEffect(() => {
-    const fetchToken = async () => {
-      try {
-        const token = await getToken();
-        console.log("Auth Token:", token);
-      } catch (error) {
-        console.error("Error getting token:", error);
-      }
-    };
-    
-
-    if (isSignedIn && isLoaded) {
-      fetchToken();
-    }
-  }, [isSignedIn, isLoaded, getToken]);
-
-  console.log("sessionId:", sessionId);
+  const { isLoaded, isSignedIn } = useAuth();
 
   React.useEffect(() => {
     const handleScroll = () => {

@@ -11,7 +11,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
+import { BASE_URL } from "@/constants/base-url";
+import { useAuth } from "@clerk/nextjs";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -27,8 +30,27 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Mail } from "@/constants/mail-data";
 import { useMail } from "@/store/use-mail";
+
+// Define the real email data structure
+interface EmailData {
+  id: string;
+  clerk_id: string;
+  message_id: string;
+  thread_id: string;
+  subject: string;
+  from_email: string;
+  from_name: string;
+  to_emails: string;
+  cc_emails: string;
+  bcc_emails: string;
+  updated_at: string;
+  is_read: boolean;
+  is_important: boolean;
+  has_attachments: boolean;
+  labels: string;
+  last_sync_at: string;
+}
 import EmailPreview from "./email-preview";
 import { BellIcon } from "@/utils/icons/bell";
 import {
@@ -37,7 +59,7 @@ import {
 } from "./mail-edit-container";
 
 interface MailDisplayProps {
-  mail: Mail | null;
+  mail: EmailData | null;
 }
 
 type ComposeMode = ComposeModeLiteral | null;
@@ -50,6 +72,12 @@ interface ComposeData {
   body: string;
 }
 
+interface EmailContent {
+  attachments: any[];
+  body: string;
+  email_id: string;
+}
+
 export function MailDisplay({ mail }: MailDisplayProps) {
   const [, setMail] = useMail();
   const [composeMode, setComposeMode] = useState<ComposeMode>(null);
@@ -60,6 +88,66 @@ export function MailDisplay({ mail }: MailDisplayProps) {
     subject: "",
     body: "",
   });
+  const [emailContent, setEmailContent] = useState<EmailContent | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  const searchParams = useSearchParams();
+  const { getToken } = useAuth();
+
+  // Helper function to extract name from email
+  const getNameFromEmail = (email: string) => {
+    const match = email.match(/^(.+?)\s*<(.+)>$/);
+    if (match) {
+      return match[1].trim() || match[2].split('@')[0];
+    }
+    return email.split('@')[0];
+  };
+
+  // Function to fetch email content
+  const fetchEmailContent = async (threadId: string) => {
+    if (!threadId) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const token = await getToken();
+      if (!token) {
+        throw new Error("Not authenticated");
+      }
+
+      const response = await fetch(`${BASE_URL}/emails/${threadId}/content`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setEmailContent(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch email content");
+      console.error("Error fetching email content:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch email content when threadId changes
+  useEffect(() => {
+    const threadId = searchParams.get('threadId');
+    if (threadId) {
+      fetchEmailContent(threadId);
+    } else {
+      setEmailContent(null);
+    }
+  }, [searchParams, getToken]);
 
   const handleBack = () => {
     setMail((prev) => ({ ...prev, selected: "" }));
@@ -67,9 +155,13 @@ export function MailDisplay({ mail }: MailDisplayProps) {
 
   const handleReply = () => {
     if (!mail) return;
+    const senderEmail = mail.from_email.includes('<') 
+      ? mail.from_email.match(/<(.+)>/)?.[1] || mail.from_email
+      : mail.from_email;
+    
     setComposeMode("reply");
     setComposeData({
-      to: mail.email,
+      to: senderEmail,
       cc: "",
       bcc: "",
       subject: `Re: ${mail.subject}`,
@@ -79,10 +171,14 @@ export function MailDisplay({ mail }: MailDisplayProps) {
 
   const handleReplyAll = () => {
     if (!mail) return;
+    const senderEmail = mail.from_email.includes('<') 
+      ? mail.from_email.match(/<(.+)>/)?.[1] || mail.from_email
+      : mail.from_email;
+    
     setComposeMode("reply-all");
     setComposeData({
-      to: mail.email,
-      cc: "",
+      to: senderEmail,
+      cc: mail.cc_emails || "",
       bcc: "",
       subject: `Re: ${mail.subject}`,
       body: "",
@@ -97,11 +193,13 @@ export function MailDisplay({ mail }: MailDisplayProps) {
       cc: "",
       bcc: "",
       subject: `Fwd: ${mail.subject}`,
-      body: `\n\n---------- Forwarded message ---------\nFrom: ${mail.name} <${
-        mail.email
+      body: `\n\n---------- Forwarded message ---------\nFrom: ${getNameFromEmail(mail.from_email)} <${
+        mail.from_email.includes('<') 
+          ? mail.from_email.match(/<(.+)>/)?.[1] || mail.from_email
+          : mail.from_email
       }>\nDate: ${
-        mail.date ? format(new Date(mail.date), "PPP p") : ""
-      }\nSubject: ${mail.subject}\n\n${mail.text}`,
+        mail.updated_at ? format(new Date(mail.updated_at), "PPP p") : ""
+      }\nSubject: ${mail.subject}\n\n[Email content would be fetched from API]`,
     });
   };
 
@@ -212,37 +310,42 @@ export function MailDisplay({ mail }: MailDisplayProps) {
                       <DropdownMenuTrigger asChild>
                         <button className="flex items-center justify-start gap-2 border w-fit p-1 rounded-full hover:bg-accent transition-colors cursor-pointer">
                           <Avatar className="h-5 w-5">
-                            <AvatarImage alt={mail.name} />
+                            <AvatarImage alt={getNameFromEmail(mail.from_email)} />
                             <AvatarFallback className="font-bold  text-white bg-zinc-600 text-xs flex items-center justify-center opacity-80">
-                              {mail.name[0]}
+                              {getNameFromEmail(mail.from_email)[0].toUpperCase()}
                             </AvatarFallback>
                           </Avatar>
                           <span className="font-medium text-sm pr-2 line-clamp-1">
-                            {mail.name}
+                            {getNameFromEmail(mail.from_email)}
                           </span>
                         </button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start" className="w-72">
                         <div className="flex items-center gap-3 p-3">
                           <Avatar className="h-10 w-10">
-                            <AvatarImage alt={mail.name} />
+                            <AvatarImage alt={getNameFromEmail(mail.from_email)} />
                             <AvatarFallback className="font-bold text-white bg-purple-600 text-base">
-                              {mail.name[0]}
+                              {getNameFromEmail(mail.from_email)[0].toUpperCase()}
                             </AvatarFallback>
                           </Avatar>
                           <div className="flex flex-col flex-1 min-w-0">
                             <div className="font-semibold text-base">
-                              {mail.name}
+                              {getNameFromEmail(mail.from_email)}
                             </div>
                             <div className="text-sm text-muted-foreground truncate">
-                              {mail.email}
+                              {mail.from_email.includes('<') 
+                                ? mail.from_email.match(/<(.+)>/)?.[1] || mail.from_email
+                                : mail.from_email}
                             </div>
                           </div>
                         </div>
                         <Separator />
                         <DropdownMenuItem
                           onClick={() => {
-                            navigator.clipboard.writeText(mail.email);
+                            const emailToCopy = mail.from_email.includes('<') 
+                              ? mail.from_email.match(/<(.+)>/)?.[1] || mail.from_email
+                              : mail.from_email;
+                            navigator.clipboard.writeText(emailToCopy);
                           }}
                           className="cursor-pointer"
                         >
@@ -260,13 +363,13 @@ export function MailDisplay({ mail }: MailDisplayProps) {
                   </div>
                 </div>
 
-                {mail.date && (
+                {mail.updated_at && (
                   <div className="flex flex-col items-end gap-0.5 font-medium">
                     <div className="text-sm text-muted-foreground">
-                      {format(new Date(mail.date), "MMM dd")}
+                      {format(new Date(mail.updated_at), "MMM dd")}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {format(new Date(mail.date), "h:mm a")}
+                      {format(new Date(mail.updated_at), "h:mm a")}
                     </div>
                   </div>
                 )}
@@ -289,7 +392,47 @@ export function MailDisplay({ mail }: MailDisplayProps) {
               </div>
             </div>
             <Separator />
-            <EmailPreview html={mail.text} />
+            {/* Email Preview */}
+            <div className="p-4">
+              {loading && (
+                <div className="flex items-center justify-center py-8">
+                  <div className="text-muted-foreground">Loading email content...</div>
+                </div>
+              )}
+              
+              {error && (
+                <div className="text-red-500 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg p-3 mb-4">
+                  Error: {error}
+                </div>
+              )}
+              
+              {emailContent && !loading && (
+                <div className="prose prose-sm max-w-none dark:prose-invert">
+                  <EmailPreview html={emailContent.body} />
+                  {emailContent.attachments && emailContent.attachments.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-border/40">
+                      <h4 className="text-sm font-medium mb-2">Attachments ({emailContent.attachments.length})</h4>
+                      <div className="space-y-2">
+                        {emailContent.attachments.map((attachment, index) => (
+                          <div key={index} className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <span>📎</span>
+                            <span>{attachment.name || `Attachment ${index + 1}`}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {!emailContent && !loading && !error && (
+                <div className="text-muted-foreground text-center py-8">
+                  <p>No email content available</p>
+                  <p className="text-xs mt-2">Thread ID: {mail.thread_id}</p>
+                </div>
+              )}
+            </div>
+            
             <div className="flex gap-2 p-4 border-t border-border/40">
               <Button
                 variant={"secondary"}

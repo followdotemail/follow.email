@@ -21,8 +21,8 @@ export function SentIcon(props: SVGProps<SVGSVGElement>) {
         d="M11.5 12.5 15 9"
         stroke="currentColor"
         strokeWidth="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );

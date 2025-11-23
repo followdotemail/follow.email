@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -72,8 +73,8 @@ func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) erro
 
 // verifySignatureWithKey verifies signature with a specific key
 func (h *WebhookHandler) verifySignatureWithKey(body, expectedSignature []byte, key string) bool {
-	mac := sha256.New()
-	mac.Write([]byte(key))
+	mac := hmac.New(sha256.New, []byte(key))
+	// mac.Write([]byte(key))
 	mac.Write(body)
 	computedSignature := mac.Sum(nil)
 	

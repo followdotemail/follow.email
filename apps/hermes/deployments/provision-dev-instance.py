@@ -541,7 +541,7 @@ class InstanceProvisioner:
             print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
             # Use appropriate timeouts - shorter for quick operations, longer for package installs
             if 'gpg' in description.lower() or 'repository' in description.lower():
-                timeout = 30  # Quick operations
+                timeout = 100  # Quick operations
                 show_cmd_output = True  # Show output for debugging
             elif 'updating' in description.lower() or 'installing' in description.lower():
                 timeout = 600  # Package operations can take time
@@ -658,14 +658,14 @@ class InstanceProvisioner:
             print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
             # Use appropriate timeouts - longer for service operations
             if 'Removing' in description or 'Testing' in description:
-                timeout = 10
+                timeout = 100
             elif 'Restarting' in description:
-                timeout = 60  # Service operations can take time
+                timeout = 100  # Service operations can take time
             elif 'Verifying nginx config' in description:
-                timeout = 5  # Quick file check
+                timeout = 100  # Quick file check
                 show_cmd_output = True  # Show output to debug
             else:
-                timeout = 30
+                timeout = 100
             if not self.run_ssh_command(command, show_output=True, timeout=timeout):
                 # For removing default site, it's OK if it doesn't exist
                 if 'Removing default site' in description:
@@ -677,7 +677,7 @@ class InstanceProvisioner:
                 elif 'Restarting nginx' in description:
                     print(f"{Colors.WARNING}Restart command failed, checking if nginx is running...{Colors.ENDC}")
                     check_cmd = "sudo systemctl is-active --quiet nginx && echo 'nginx is running' || echo 'nginx is not running'"
-                    if self.run_ssh_command(check_cmd, show_output=True, timeout=10):
+                    if self.run_ssh_command(check_cmd, show_output=True, timeout=100):
                         print(f"{Colors.OKGREEN}Nginx is running, continuing...{Colors.ENDC}")
                     else:
                         print(f"{Colors.FAIL}[ERROR] Nginx is not running after restart attempt{Colors.ENDC}")
@@ -702,9 +702,9 @@ class InstanceProvisioner:
     
     def setup_env_file(self, local_env_path: str = None) -> bool:
         """
-        Copy .env file to server and set up environment variables
+        Copy prod.env file to server and set up environment variables
         
-        This copies the .env file and creates a script to export variables
+        This copies the prod.env file and creates a script to export variables
         so the application can access them.
         """
         print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
@@ -713,15 +713,15 @@ class InstanceProvisioner:
         
         # Default to root .env file if not specified
         if local_env_path is None:
-            local_env_path = os.path.join(os.path.dirname(__file__), '../../../.env')
+            local_env_path = os.path.join(os.path.dirname(__file__), '../prod.env')
         
         # First check if .env exists locally
         if not os.path.exists(local_env_path):
-            print(f"{Colors.WARNING}.env file not found at {local_env_path}{Colors.ENDC}")
+            print(f"{Colors.WARNING}prod.env file not found at {local_env_path}{Colors.ENDC}")
             print(f"{Colors.WARNING}Skipping env setup. You'll need to copy it manually.{Colors.ENDC}")
             return False
         
-        print(f"{Colors.OKBLUE}Copying .env file to server...{Colors.ENDC}")
+        print(f"{Colors.OKBLUE}Copying prod.env file to server...{Colors.ENDC}")
         
         # Use scp to copy the .env file to root of the app directory AND infra directory
         scp_commands = [

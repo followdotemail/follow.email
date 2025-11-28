@@ -25,6 +25,7 @@ interface MailEditContainerProps {
     subject: string;
     body: string;
   }) => void;
+  sending?: boolean;
 }
 
 export function MailEditContainer({
@@ -36,6 +37,7 @@ export function MailEditContainer({
   initialBody = "",
   onClose,
   onSend,
+  sending = false,
 }: MailEditContainerProps) {
   const [showCc, setShowCc] = useState(!!initialCc || mode === "reply-all");
   const [showBcc, setShowBcc] = useState(!!initialBcc);
@@ -140,6 +142,19 @@ export function MailEditContainer({
           </div>
         )}
 
+        {/* Subject Field */}
+        <div className="flex items-center gap-2 border-b border-border/40 pb-2">
+          <label className="text-sm text-muted-foreground min-w-12">
+            Subject:
+          </label>
+          <Input
+            value={composeSubject}
+            onChange={(e) => setComposeSubject(e.target.value)}
+            placeholder="Subject"
+            className="border-0 bg-transparent focus-visible:ring-0 shadow-none px-0"
+          />
+        </div>
+
         {/* Message Body */}
         <div className="">
           <Textarea
@@ -161,8 +176,8 @@ export function MailEditContainer({
             <Button variant="ghost" size="sm" className="text-muted-foreground">
               <FileIcon className=" h-4 w-4 text-muted-foreground" /> Attachment
             </Button>
-            <Button onClick={handleSend} size="sm">
-              Send <CornerDownLeft />
+            <Button onClick={handleSend} size="sm" disabled={sending}>
+              {sending ? "Sending..." : "Send"} <CornerDownLeft />
             </Button>
           </div>
         </div>

@@ -7,6 +7,9 @@ import { Button } from "../ui/button";
 import { AccountSwitcher } from "./account-switcher";
 import { Nav } from "./nav";
 import { useAuth } from "@clerk/nextjs";
+import AppLogo from "../app-logo";
+import { UserProfile } from "./user-profile";
+import { ComposeDialog } from "./compose-dialog";
 
 type IconComponent = React.ComponentType<React.SVGProps<SVGSVGElement>>;
 
@@ -36,6 +39,7 @@ interface SidebarProps {
 export function Sidebar({ accounts, isCollapsed, navItems }: SidebarProps) {
   const { isLoaded, isSignedIn, getToken, sessionId } = useAuth();
   const [copied, setCopied] = React.useState(false);
+  const [composeOpen, setComposeOpen] = React.useState(false);
 
   const copyTokenToClipboard = async () => {
     try {
@@ -50,15 +54,15 @@ export function Sidebar({ accounts, isCollapsed, navItems }: SidebarProps) {
     }
   };
   return (
-    <section className="h-full flex flex-col justify-between border">
+    <section className="h-full flex flex-col justify-between">
       <div>
         <div
           className={cn(
-            "flex h-[52px] items-center justify-center",
-            isCollapsed ? "h-[52px]" : "px-2"
+            "flex h-[52px] items-center justify-start gap-1",
+            isCollapsed ? "h-[52px] justify-center" : "px-2"
           )}
         >
-          <AccountSwitcher isCollapsed={isCollapsed} accounts={accounts} />
+          <AppLogo /> {isCollapsed ? "" : "Follow Email"}
         </div>
         <div
           className={cn(
@@ -70,6 +74,7 @@ export function Sidebar({ accounts, isCollapsed, navItems }: SidebarProps) {
             variant="blue"
             className={cn("w-full", isCollapsed && "w-fit aspect-square")}
             size={isCollapsed ? "icon" : "default"}
+            onClick={() => setComposeOpen(true)}
           >
             <Pencil className="h-3 w-3" /> {isCollapsed ? "" : "New Mail"}
           </Button>
@@ -83,10 +88,14 @@ export function Sidebar({ accounts, isCollapsed, navItems }: SidebarProps) {
           onClick={copyTokenToClipboard}
           disabled={!isSignedIn || !isLoaded || copied}
         >
-          {copied ? "Copied" : "Copy Token"}
+          {copied ? "Copied" : "Token"}
         </Button>
-        <Nav isCollapsed={isCollapsed} links={navItems.secondary} />
+        {/* <Nav isCollapsed={isCollapsed} links={navItems.secondary} /> */}
+        <div className={cn("px-2", isCollapsed && "px-0 mb-4")}>
+          <UserProfile isCollapsed={isCollapsed} />
+        </div>
       </div>
+      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} />
     </section>
   );
 }

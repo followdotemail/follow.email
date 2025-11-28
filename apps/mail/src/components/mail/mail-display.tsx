@@ -117,7 +117,7 @@ export function MailDisplay({ mail }: MailDisplayProps) {
         throw new Error("Not authenticated");
       }
 
-      const response = await fetch(`${BASE_URL}/emails/${threadId}/content`, {
+      const response = await fetch(`${BASE_URL}/emails/${threadId}`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",

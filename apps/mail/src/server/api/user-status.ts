@@ -10,7 +10,9 @@ export async function checkUserConsentStatus(token: string) {
       },
     });
 
-    const responseData = response.status === 200 ? await response.json() : null;
+    const responseData = await response.json();
+
+    console.log("User sync status response:", responseData);
 
     return {
       isConnected: responseData.gmail_consent,

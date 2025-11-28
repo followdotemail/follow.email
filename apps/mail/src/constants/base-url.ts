@@ -1,1 +1,1 @@
-export const BASE_URL = "http://api.follow.email/api/v1";
+export const BASE_URL = "https://api.follow.email/api/v1";

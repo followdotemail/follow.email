@@ -2,7 +2,7 @@ import { BASE_URL } from "@/constants/base-url";
 
 export async function fetchMailLists(token: string) {
   try {
-    const response = await fetch(`http://api.follow.email/api/v1/emails`, {
+    const response = await fetch(`${BASE_URL}/emails`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",

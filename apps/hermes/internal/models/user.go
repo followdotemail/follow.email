@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"follow-email-backend/pkg/encryption"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -23,26 +24,6 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	IsActive  bool      `json:"is_active" gorm:"default:true"`
-}
-
-// ExternalAccount represents social login connections managed by Clerk
-type ExternalAccount struct {
-	ID                 uuid.UUID `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	UserID             uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
-	ClerkExternalID    string    `json:"clerk_external_id" gorm:"uniqueIndex;not null"`
-	Provider           string    `json:"provider" gorm:"not null"` // "oauth_google", "oauth_github", "oauth_facebook"
-	ProviderUserID     string    `json:"provider_user_id"`
-	EmailAddress       string    `json:"email_address"`
-	FirstName          *string   `json:"first_name"`
-	LastName           *string   `json:"last_name"`
-	ImageURL           *string   `json:"image_url"`
-	Username           *string   `json:"username"`
-	PublicMetadata     *string   `json:"public_metadata" gorm:"type:jsonb"`
-	Label              *string   `json:"label"`
-	VerificationStatus string    `json:"verification_status" gorm:"default:'verified'"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	User               User      `gorm:"foreignKey:UserID"`
 }
 
 // OAuthToken - Legacy model, kept for backward compatibility
@@ -139,19 +120,6 @@ func (o *OAuthToken) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-type UserPreferences struct {
-	ID                   uuid.UUID `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	UserID               uuid.UUID `json:"user_id" gorm:"type:uuid;uniqueIndex;not null"`
-	AutoFollowUpEnabled  bool      `json:"auto_followup_enabled" gorm:"default:false"`
-	FollowUpDelayHours   int       `json:"followup_delay_hours" gorm:"default:24"`
-	MaxFollowUpAttempts  int       `json:"max_followup_attempts" gorm:"default:3"`
-	AIResponseEnabled    bool      `json:"ai_response_enabled" gorm:"default:true"`
-	EmailNotifications   bool      `json:"email_notifications" gorm:"default:true"`
-	WebhookNotifications bool      `json:"webhook_notifications" gorm:"default:false"`
-	User                 User      `gorm:"foreignKey:UserID"`
-	WebhookURL           string    `json:"webhook_url" db:"webhook_url"`
-}
-
 // JWT Claims for authentication
 type JWTClaims struct {
 	UserID   string `json:"user_id"` // Changed to string for Clerk compatibility
@@ -164,14 +132,6 @@ func (User) TableName() string {
 	return "users"
 }
 
-func (ExternalAccount) TableName() string {
-	return "external_accounts"
-}
-
 func (OAuthToken) TableName() string {
 	return "oauth_tokens"
-}
-
-func (UserPreferences) TableName() string {
-	return "user_preferences"
 }

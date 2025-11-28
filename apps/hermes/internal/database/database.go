@@ -52,13 +52,8 @@ func Migrate(db *gorm.DB) error {
 	// Auto-migrate the schema for all models
 	return db.AutoMigrate(
 		&models.User{},
-		&models.ExternalAccount{},
 		&models.OAuthToken{},
-		&models.UserPreferences{},
-		&models.ProviderSyncMetadata{},
-		&models.SyncJob{},
 		&models.UserPrivacyMetadata{},
-		// &models.UserSubscription{}, // Subscription service disabled
 		&models.GmailConsent{},
 	)
 }

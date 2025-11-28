@@ -778,7 +778,7 @@ Required environment variables for API functionality:
 ### Gmail Integration
 - `GOOGLE_CLIENT_ID`: Google OAuth client ID
 - `GOOGLE_CLIENT_SECRET`: Google OAuth client secret
-- `GOOGLE_REDIRECT_URL`: OAuth callback URL
+- `BASE_URL`: Base URL for OAuth callbacks (e.g., http://localhost:8080)
 
 ### Database
 - `DATABASE_URL`: PostgreSQL connection string

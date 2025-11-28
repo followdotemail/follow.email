@@ -34,6 +34,16 @@ Usage:
     python provision-dev-instance.py --action setup-only
 """
 
+"""
+#######################################
+NEED TO MAKE THE SCRIPT FAILED PROOF -
+- Need to separate the cli command execution in 2 parts.
+- 1st part will retry for some time with exponential backoff. This part will have critical command which should be retried.
+- 2nd part will have try catch block only with no retry. This part will have non-critical commands which can be ignored if they fail.
+- First, I need to the command into critical and non-critical parts.
+#######################################
+"""
+
 from dis import show_code
 import os
 import sys
@@ -50,7 +60,7 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(__file__), '../../../.env')
 load_dotenv(env_path)
 print(f"Loading environment from: {os.path.abspath(env_path)}")
-webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+webhook_url = "https://discordapp.com/api/webhooks/1440730059056091147/b7hiFgSWYS3kb1a6GUt86CQFRLHLjWSV5YegU1BEw9PaBlAKRtpZViHX5L9aF79vLAfp"
 
 class Colors:
     """ANSI color codes for terminal output"""
@@ -90,7 +100,7 @@ class DiscordNotifier:
         }
 
         try:
-            requests.post(self.webhook_url, json=payload, timeout=10)
+            requests.post(self.webhook_url, json=payload, timeout=100)
         except Exception as e:
             print(f"{Colors.FAIL}[ERROR] Failed to send notification: {e}{Colors.ENDC}")
 
@@ -173,7 +183,7 @@ class ExcloudInstanceManager:
                 f"{self.base_url}/compute/create",
                 headers=self.headers,
                 json=payload,
-                timeout=30
+                timeout=100
             )
             response.raise_for_status()
             instance_data = response.json()
@@ -215,7 +225,7 @@ class ExcloudInstanceManager:
             response = requests.get(
                 url,
                 headers=self.headers,
-                timeout=30
+                timeout=100
             )
             response.raise_for_status()
             vms = response.json()
@@ -291,7 +301,7 @@ class ExcloudInstanceManager:
                 f"{self.base_url}/compute/terminate",
                 headers=self.headers,
                 json=payload,
-                timeout=30
+                timeout=100
             )
             response.raise_for_status()
             print(f"{Colors.OKGREEN}[OK] Instance terminated successfully{Colors.ENDC}")
@@ -330,13 +340,18 @@ class SpaceshipDNSManager:
             response = requests.get(
                 f"{self.base_url}/dns/records/{self.domain}?take=100&skip=0&orderBy=type",
                 headers=self.headers,
-                timeout=30
+                timeout=100
             )
-            response.raise_for_status()
-            records = response.json()
+
+            if response.status_code >= 200 and response.status_code <= 299:
+                records = response.json()
+                print(f"{Colors.OKGREEN}[OK] Found {len(records.get('items', []))} records{Colors.ENDC}")
+                return records.get('items', [])
+            else:
+                print(f"{Colors.FAIL}[ERROR] Failed to fetch DNS records: {response.status_code}{Colors.ENDC}")
+                print(f"{Colors.FAIL}[ERROR] Response body: {response.text}{Colors.ENDC}")
+                raise requests.exceptions.RequestException(f"Failed to fetch DNS records: {response.status_code}")
             
-            print(f"{Colors.OKGREEN}[OK] Found {len(records.get('items', []))} records{Colors.ENDC}")
-            return records.get('items', [])
         
         except requests.exceptions.RequestException as e:
             print(f"{Colors.FAIL}[ERROR] Failed to fetch DNS records: {e}{Colors.ENDC}")
@@ -360,7 +375,7 @@ class SpaceshipDNSManager:
                 url=f"{self.base_url}/dns/records/{self.domain}",
                 headers=self.headers,
                 json=payload,
-                timeout=30
+                timeout=300
             )
             response.raise_for_status()
             print(f"{Colors.OKGREEN}[OK] Old A record deleted{Colors.ENDC}")
@@ -372,7 +387,7 @@ class SpaceshipDNSManager:
     
     def create_or_update_a_record(self, record_name: str, ip_address: str, ttl: int = 1800) -> bool:
         """Create or update an A record"""
-        print(f"{Colors.OKBLUE}Creating A record for {record_name}.{self.domain} → {ip_address}...{Colors.ENDC}")
+        print(f"{Colors.OKBLUE}Creating A record for {record_name}.{self.domain} -> {ip_address}...{Colors.ENDC}")
         
         payload = {
             "force": False,
@@ -391,11 +406,11 @@ class SpaceshipDNSManager:
                 f"{self.base_url}/dns/records/{self.domain}",
                 headers=self.headers,
                 json=payload,
-                timeout=30
+                timeout=300
             )
             response.raise_for_status()
             print(f"{Colors.OKGREEN}[OK] DNS record updated successfully{Colors.ENDC}")
-            print(f"  {record_name}.{self.domain} → {ip_address}")
+            print(f"  {record_name}.{self.domain} -> {ip_address}")
             return True
         
         except requests.exceptions.RequestException as e:
@@ -447,7 +462,7 @@ class InstanceProvisioner:
                         'echo "SSH Ready"'
                     ],
                     capture_output=True,
-                    timeout=10
+                    timeout=100
                 )
                 
                 if result.returncode == 0:
@@ -476,14 +491,22 @@ class InstanceProvisioner:
                 ],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=timeout
             )
             
-            if show_output and result.stdout:
-                print(result.stdout)
+            if show_output:
+                if result.stdout:
+                    print(result.stdout)
+                if result.stderr:
+                    print(result.stderr)
             
             if result.returncode != 0:
-                print(f"{Colors.FAIL}Command failed: {result.stderr}{Colors.ENDC}")
+                if not show_output and result.stderr:
+                    print(f"{Colors.FAIL}Command failed: {result.stderr}{Colors.ENDC}")
+                else:
+                    print(f"{Colors.FAIL}Command failed with return code {result.returncode}{Colors.ENDC}")
                 return False
             
             return True
@@ -541,7 +564,7 @@ class InstanceProvisioner:
             print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
             # Use appropriate timeouts - shorter for quick operations, longer for package installs
             if 'gpg' in description.lower() or 'repository' in description.lower():
-                timeout = 100  # Quick operations
+                timeout = 300  # Quick operations
                 show_cmd_output = True  # Show output for debugging
             elif 'updating' in description.lower() or 'installing' in description.lower():
                 timeout = 600  # Package operations can take time
@@ -615,18 +638,45 @@ class InstanceProvisioner:
                 tmp_config_path,
                 f'{self.ssh_user}@{self.ip_address}:/tmp/nginx-config.tmp'
             ]
-            result = subprocess.run(scp_command, capture_output=True, timeout=30)
+            result = subprocess.run(scp_command, capture_output=True, text=True, timeout=600)
+            
+            # Show output for debugging
+            if result.stdout:
+                print(f"SCP stdout: {result.stdout}")
+            if result.stderr:
+                print(f"SCP stderr: {result.stderr}")
+            
             if result.returncode != 0:
-                print(f"{Colors.FAIL}Failed to copy nginx config: {result.stderr.decode() if result.stderr else 'Unknown error'}{Colors.ENDC}")
-                if result.stdout:
-                    print(f"  Output: {result.stdout.decode()}")
+                print(f"{Colors.FAIL}Failed to copy nginx config (return code: {result.returncode}){Colors.ENDC}")
                 return False
+            
+            # Verify the file actually exists on the server
+            verify_result = subprocess.run(
+                [
+                    'ssh',
+                    '-o', 'StrictHostKeyChecking=no',
+                    '-o', 'UserKnownHostsFile=/dev/null',
+                    '-i', self.ssh_key_path,
+                    f'{self.ssh_user}@{self.ip_address}',
+                    'ls -la /tmp/nginx-config.tmp'
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if verify_result.returncode != 0:
+                print(f"{Colors.FAIL}File verification failed - nginx config was not copied to /tmp/nginx-config.tmp{Colors.ENDC}")
+                print(f"Verification output: {verify_result.stderr}")
+                return False
+            
             print(f"{Colors.OKGREEN}[OK] Nginx config file copied to server{Colors.ENDC}")
+            print(f"File details: {verify_result.stdout.strip()}")
             
             # Move file to final location immediately after SCP
             print(f"{Colors.OKBLUE}Moving nginx config to final location...{Colors.ENDC}")
             move_command = "sudo mv -f /tmp/nginx-config.tmp /etc/nginx/sites-available/follow-email && sudo chmod 644 /etc/nginx/sites-available/follow-email"
-            if not self.run_ssh_command(move_command, show_output=True, timeout=60):
+            if not self.run_ssh_command(move_command, show_output=True, timeout=600):
                 print(f"{Colors.FAIL}Failed to move nginx config file{Colors.ENDC}")
                 return False
             print(f"{Colors.OKGREEN}[OK] Nginx config file moved to final location{Colors.ENDC}")
@@ -649,7 +699,7 @@ class InstanceProvisioner:
             ("Removing default site",
              "[ -f /etc/nginx/sites-enabled/default ] && sudo rm -f /etc/nginx/sites-enabled/default || true"),
             ("Testing nginx config",
-             "sudo nginx -t"),
+             "sudo nginx -t < /dev/null 2>&1"),
             ("Restarting nginx",
              "sudo systemctl stop nginx 2>/dev/null; sudo systemctl start nginx && sleep 2 && sudo systemctl is-active --quiet nginx"),
         ]
@@ -658,14 +708,14 @@ class InstanceProvisioner:
             print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
             # Use appropriate timeouts - longer for service operations
             if 'Removing' in description or 'Testing' in description:
-                timeout = 100
+                timeout = 300
             elif 'Restarting' in description:
-                timeout = 100  # Service operations can take time
+                timeout = 300  # Service operations can take time
             elif 'Verifying nginx config' in description:
-                timeout = 100  # Quick file check
+                timeout = 300  # Quick file check
                 show_cmd_output = True  # Show output to debug
             else:
-                timeout = 100
+                timeout = 300
             if not self.run_ssh_command(command, show_output=True, timeout=timeout):
                 # For removing default site, it's OK if it doesn't exist
                 if 'Removing default site' in description:
@@ -677,7 +727,7 @@ class InstanceProvisioner:
                 elif 'Restarting nginx' in description:
                     print(f"{Colors.WARNING}Restart command failed, checking if nginx is running...{Colors.ENDC}")
                     check_cmd = "sudo systemctl is-active --quiet nginx && echo 'nginx is running' || echo 'nginx is not running'"
-                    if self.run_ssh_command(check_cmd, show_output=True, timeout=100):
+                    if self.run_ssh_command(check_cmd, show_output=True, timeout=300):
                         print(f"{Colors.OKGREEN}Nginx is running, continuing...{Colors.ENDC}")
                     else:
                         print(f"{Colors.FAIL}[ERROR] Nginx is not running after restart attempt{Colors.ENDC}")
@@ -690,10 +740,10 @@ class InstanceProvisioner:
         # Verify nginx is running and listening
         print(f"\n{Colors.OKBLUE}Verifying nginx status...{Colors.ENDC}")
         nginx_status = "sudo systemctl is-active nginx && echo 'Nginx is active' || echo 'Nginx is not active'"
-        self.run_ssh_command(nginx_status, show_output=True, timeout=10)
+        self.run_ssh_command(nginx_status, show_output=True, timeout=100)
         
         port_check = "sudo netstat -tlnp | grep ':80 ' || sudo ss -tlnp | grep ':80 ' || echo 'Port 80 check failed'"
-        self.run_ssh_command(port_check, show_output=True, timeout=10)
+        self.run_ssh_command(port_check, show_output=True, timeout=100)
         
         print(f"\n{Colors.OKGREEN}[OK] Nginx configured successfully!{Colors.ENDC}\n")
         print(f"{Colors.WARNING}IMPORTANT: Make sure your Excloud security group allows HTTP (port 80) traffic!{Colors.ENDC}")
@@ -792,7 +842,7 @@ class InstanceProvisioner:
              "cd /opt/follow.email/infra && sudo docker compose up -d backend"),
             
             ("Waiting for app to be healthy",
-             "sleep 10"),
+             "sleep 60"),
         ]
         
         for description, command in commands:
@@ -805,18 +855,18 @@ class InstanceProvisioner:
         # Check container status
         print(f"\n{Colors.OKBLUE}Checking container status...{Colors.ENDC}")
         status_check = "cd /opt/follow.email/infra && sudo docker compose ps backend"
-        self.run_ssh_command(status_check, show_output=True, timeout=10)
+        self.run_ssh_command(status_check, show_output=True, timeout=100)
         
         # Check if the app is responding
         print(f"\n{Colors.OKBLUE}Checking application health...{Colors.ENDC}")
         health_check = "curl -f http://localhost:8080/api/v1/health || echo 'Health check failed'"
-        if self.run_ssh_command(health_check, show_output=True, timeout=10):
+        if self.run_ssh_command(health_check, show_output=True, timeout=100):
             print(f"{Colors.OKGREEN}[OK] Application is running and healthy!{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Health check failed{Colors.ENDC}")
             print(f"{Colors.OKBLUE}Checking container logs...{Colors.ENDC}")
             logs_check = "cd /opt/follow.email/infra && sudo docker compose logs --tail=50 backend"
-            self.run_ssh_command(logs_check, show_output=True, timeout=30)
+            self.run_ssh_command(logs_check, show_output=True, timeout=300)
             print(f"{Colors.WARNING}Please check the logs above for errors{Colors.ENDC}")
         
         print(f"\n{Colors.OKGREEN}[OK] Application started successfully!{Colors.ENDC}\n")
@@ -862,20 +912,20 @@ class InstanceProvisioner:
         print(f"\n{Colors.OKBLUE}Verifying SSL certificate...{Colors.ENDC}")
 
         cert_check = f"sudo certbot certificates | grep -A2 '{domain}' || echo 'Certificate not found!'"
-        self.run_ssh_command(cert_check, show_output=True, timeout=30)
+        self.run_ssh_command(cert_check, show_output=True, timeout=300)
 
         # Test auto renewal
         print(f"\n{Colors.OKBLUE}Testing certificate auto-renewal...{Colors.ENDC}")
         renewal_test = f"sudo certbot renew --dry-run"
-        if self.run_ssh_command(renewal_test, show_output=True, timeout=60):
+        if self.run_ssh_command(renewal_test, show_output=True, timeout=100):
             print(f"{Colors.OKGREEN}[OK] Auto-renewal test passed{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Auto-renewal test failed, but certificate is installed{Colors.ENDC}")
 
         # Verify nginx config with SSL
         print(f"\n{Colors.OKBLUE}Verifying nginx SSL configuration...{Colors.ENDC}")
-        nginx_test = "sudo nginx -t"
-        if self.run_ssh_command(nginx_test, show_output=True, timeout=10):
+        nginx_test = "sudo nginx -t < /dev/null 2>&1"
+        if self.run_ssh_command(nginx_test, show_output=True, timeout=100):
             print(f"{Colors.OKGREEN}[OK] Nginx SSL configuration is valid{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Nginx configuration test failed{Colors.ENDC}")
@@ -883,7 +933,7 @@ class InstanceProvisioner:
         # Reload nginx to apply SSL config
         print(f"\n{Colors.OKBLUE}Reloading nginx to apply SSL configuration...{Colors.ENDC}")
         reload_cmd = "sudo systemctl reload nginx && sleep 2 && sudo systemctl is-active --quiet nginx && echo 'Nginx is active' && sudo systemctl status nginx"
-        if self.run_ssh_command(reload_cmd, show_output=True, timeout=30):
+        if self.run_ssh_command(reload_cmd, show_output=True, timeout=100):
             print(f"{Colors.OKGREEN}[OK] Nginx reloaded successfully{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Nginx reload failed, but continuing...{Colors.ENDC}")
@@ -892,6 +942,195 @@ class InstanceProvisioner:
         print(f"{Colors.WARNING}IMPORTANT: Make sure your Excloud security group allows HTTPS (port 443) traffic!{Colors.ENDC}")
         print(f"{Colors.WARNING}Security Group ID: {os.getenv('EXCLOUD_SECURITY_GROUP_ID', 'Check your Excloud console')}{Colors.ENDC}\n")
         return True
+
+
+    def install_existing_ssl_certificate(self, local_cert_path: str, record_name: str) -> bool:
+        """Install existing SSL certificate instead of obtaining a new one"""
+
+        print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+        print(f"{Colors.HEADER}Installing Existing SSL Certificate{Colors.ENDC}")
+        print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
+
+        domain = f"{record_name}.follow.email"
+
+        local_fullchain = os.path.join(local_cert_path, 'fullchain.pem')
+        local_privkey = os.path.join(local_cert_path, 'privkey.pem')
+        local_chain = os.path.join(local_cert_path, 'chain.pem')
+        local_cert = os.path.join(local_cert_path, 'cert.pem')
+
+        required_files = [local_fullchain, local_privkey]
+        optional_files = [local_chain, local_cert]
+
+        for file_path in required_files:
+            if not os.path.exists(file_path):
+                print(f"{Colors.FAIL}Required certificate file not found: {file_path}{Colors.ENDC}")
+                return False
+
+        print(f"{Colors.OKBLUE}Found existing SSL certificates, uploading to server...{Colors.ENDC}")
+        
+        # Create letsencrypt directory structure on server
+        commands = [
+            f"sudo mkdir -p /etc/letsencrypt/live/{domain}",
+            f"sudo mkdir -p /etc/letsencrypt/archive/{domain}",
+        ]
+
+        for cmd in commands:
+            if not self.run_ssh_command(cmd, show_output=False, timeout=100):
+                print(f"{Colors.FAIL}Failed to create certificate directories{Colors.ENDC}")
+                return False
+
+        # Upload certificate files via SCP
+        cert_files = [
+            (local_fullchain, '/tmp/fullchain.pem', f'/etc/letsencrypt/live/{domain}/fullchain.pem'),
+            (local_privkey, '/tmp/privkey.pem', f'/etc/letsencrypt/live/{domain}/privkey.pem'),
+        ]
+
+        # Add optional files if they exist
+        if os.path.exists(local_chain):
+            cert_files.append((local_chain, '/tmp/chain.pem', f'/etc/letsencrypt/live/{domain}/chain.pem'))
+        if os.path.exists(local_cert):
+            cert_files.append((local_cert, '/tmp/cert.pem', f'/etc/letsencrypt/live/{domain}/cert.pem'))
+
+        for local_file, remote_tmp, remote_final in cert_files:
+            # Upload to /tmp first
+            scp_command = [
+                'scp',
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-i', self.ssh_key_path,
+                local_file,
+                f'{self.ssh_user}@{self.ip_address}:{remote_tmp}'
+            ]
+
+            try:
+                result = subprocess.run(scp_command, capture_output=True, timeout=100)
+                if result.returncode != 0:
+                    print(f"{Colors.FAIL}Failed to upload {os.path.basename(local_file)}{Colors.ENDC}")
+                    return False
+                
+                # Move to proper location with correct permissions
+                move_cmd = f"sudo mv {remote_tmp} {remote_final}"
+                if not self.run_ssh_command(move_cmd, show_output=False, timeout=100):
+                    print(f"{Colors.FAIL}Failed to move {os.path.basename(local_file)} to final location{Colors.ENDC}")
+                    return False
+                
+                print(f"{Colors.OKGREEN}[OK] Uploaded {os.path.basename(local_file)}{Colors.ENDC}")
+                
+            except Exception as e:
+                print(f"{Colors.FAIL}Failed to upload certificate file: {e}{Colors.ENDC}")
+                return False
+
+        # Set correct permissions
+        permission_commands = [
+            f"sudo chmod 644 /etc/letsencrypt/live/{domain}/fullchain.pem",
+            f"sudo chmod 600 /etc/letsencrypt/live/{domain}/privkey.pem",
+            f"sudo chown root:root /etc/letsencrypt/live/{domain}/*.pem",
+        ]
+
+        for cmd in permission_commands:
+            self.run_ssh_command(cmd, show_output=False, timeout=100)
+        
+        # Update nginx configuration to use SSL
+        print(f"\n{Colors.OKBLUE}Updating nginx configuration for SSL...{Colors.ENDC}")
+        
+        nginx_ssl_config = f"""server {{
+            listen 80;
+            server_name {domain};
+            
+            # Redirect HTTP to HTTPS
+            return 301 https://$server_name$request_uri;
+        }}
+
+        server {{
+            listen 443 ssl http2;
+            server_name {domain};
+
+            # SSL Configuration
+            ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
+            ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
+            
+            # SSL Settings
+            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_prefer_server_ciphers on;
+            ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+
+            # Security headers
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+            # Proxy settings
+            location / {{
+                proxy_pass http://localhost:8080;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection 'upgrade';
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_cache_bypass $http_upgrade;
+                
+                # Timeouts
+                proxy_connect_timeout 60s;
+                proxy_send_timeout 60s;
+                proxy_read_timeout 60s;
+            }}
+
+            # Health check endpoint
+            location /api/v1/health {{
+                proxy_pass http://localhost:8080;
+                access_log off;
+            }}
+        }}"""
+        
+        # Write and upload nginx config with SSL
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as tmp_file:
+            tmp_file.write(nginx_ssl_config)
+            tmp_config_path = tmp_file.name
+        
+        try:
+            # Upload config
+            scp_command = [
+                'scp',
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-i', self.ssh_key_path,
+                tmp_config_path,
+                f'{self.ssh_user}@{self.ip_address}:/tmp/nginx-ssl-config.tmp'
+            ]
+            subprocess.run(scp_command, capture_output=True, timeout=300, check=True)
+            
+            # Move to nginx sites-available
+            self.run_ssh_command(
+                "sudo mv -f /tmp/nginx-ssl-config.tmp /etc/nginx/sites-available/follow-email && "
+                "sudo chmod 644 /etc/nginx/sites-available/follow-email",
+                show_output=False, timeout=100
+            )
+            
+        finally:
+            os.unlink(tmp_config_path)
+        
+        # Test and reload nginx
+        print(f"\n{Colors.OKBLUE}Testing nginx configuration...{Colors.ENDC}")
+        try:
+            if not self.run_ssh_command("sudo nginx -t < /dev/null 2>&1", show_output=True, timeout=300):
+                print(f"{Colors.FAIL}Nginx configuration test failed{Colors.ENDC}")
+                return False
+        except Exception as e:
+            print(f"{Colors.FAIL}Failed to test nginx configuration: {e}{Colors.ENDC}")
+            return False
+        
+        print(f"{Colors.OKBLUE}Reloading nginx...{Colors.ENDC}")
+        if not self.run_ssh_command("sudo systemctl reload nginx", show_output=True, timeout=300):
+            print(f"{Colors.FAIL}Failed to reload nginx{Colors.ENDC}")
+            return False
+        
+        print(f"\n{Colors.OKGREEN}[OK] SSL certificate installed successfully!{Colors.ENDC}\n")
+        return True
+            
 
 def main():
     parser = argparse.ArgumentParser(description='Provision Excloud development instance for follow.email')
@@ -1060,10 +1299,24 @@ def main():
                 print(f"{Colors.FAIL}Failed to setup nginx{Colors.ENDC}")
                 sys.exit(1)
 
-            if not provisioner.setup_ssl_certificate(record_name):
-                print(f"{Colors.WARNING}Warning: SSL certificate installation failed or skipped{Colors.ENDC}")
-                print(f"{Colors.WARNING}You can install it manually later when DNS has propagated{Colors.ENDC}")
-            
+            ssl_cert_dir = os.path.join(os.path.dirname(__file__), 'ssl_certs')
+            if os.path.exists(ssl_cert_dir):
+                print(f"{Colors.OKBLUE}Found existing SSL certificates, will reuse them...{Colors.ENDC}")
+                if not provisioner.install_existing_ssl_certificate(ssl_cert_dir, record_name):
+                    print(f"{Colors.WARNING}Warning: Failed to install existing SSL certificate{Colors.ENDC}")
+                    print(f"{Colors.WARNING}Falling back to obtaining new certificate...{Colors.ENDC}")
+
+                    if not provisioner.setup_ssl_certificate(record_name):
+                        print(f"{Colors.WARNING}Warning: SSL certificate installation failed or skipped{Colors.ENDC}")
+                        print(f"{Colors.WARNING}You can install it manually later when DNS has propagated{Colors.ENDC}")
+            else:
+                # No existing certificates, obtain new ones
+                if not provisioner.setup_ssl_certificate(record_name):
+                    print(f"{Colors.WARNING}Warning: SSL certificate installation failed or skipped{Colors.ENDC}")
+                    print(f"{Colors.WARNING}You can install it manually later when DNS has propagated{Colors.ENDC}")
+
+
+
             if not provisioner.deploy_application(args.github_repo):
                 print(f"{Colors.FAIL}Failed to deploy application{Colors.ENDC}")
                 sys.exit(1)
@@ -1153,7 +1406,11 @@ def main():
             
             provisioner.install_dependencies()
             provisioner.setup_nginx(record_name)
-            provisioner.setup_ssl_certificate(record_name)
+            ssl_cert_dir = os.path.join(os.path.dirname(__file__), 'ssl_certs')
+            if os.path.exists(ssl_cert_dir) and os.path.exists(os.path.join(ssl_cert_dir, 'fullchain.pem')):
+                provisioner.install_existing_ssl_certificate(ssl_cert_dir, record_name)
+            else:
+                provisioner.setup_ssl_certificate(record_name)
             provisioner.deploy_application(args.github_repo)
             provisioner.setup_env_file()
             provisioner.start_application()

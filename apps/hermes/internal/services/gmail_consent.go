@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"follow-email-backend/internal/models"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -16,11 +17,11 @@ type GmailConsentService struct {
 
 // GmailConsentRequest represents a consent request
 type GmailConsentRequest struct {
-	UserID      uuid.UUID `json:"user_id"`
-	ConsentType string    `json:"consent_type"` // "gmail_access", "data_sync", "ai_analysis"
-	Granted     bool      `json:"granted"`
-	Purpose     string    `json:"purpose,omitempty"`
-	RetentionDays int     `json:"retention_days,omitempty"`
+	UserID        uuid.UUID `json:"user_id"`
+	ConsentType   string    `json:"consent_type"` // "gmail_access", "data_sync", "ai_analysis"
+	Granted       bool      `json:"granted"`
+	Purpose       string    `json:"purpose,omitempty"`
+	RetentionDays int       `json:"retention_days,omitempty"`
 }
 
 // GmailConsentRecord represents a stored consent record
@@ -57,11 +58,11 @@ func NewGmailConsentService(db *gorm.DB) *GmailConsentService {
 // RecordConsent records user consent for Gmail access
 func (s *GmailConsentService) RecordConsent(req *GmailConsentRequest) error {
 	now := time.Now()
-	
+
 	// Check if consent record exists
 	var gmailConsent models.GmailConsent
 	result := s.db.Where("user_id = ?", req.UserID).First(&gmailConsent)
-	
+
 	if result.Error == gorm.ErrRecordNotFound {
 		// Create new consent record
 		gmailConsent = models.GmailConsent{
@@ -69,7 +70,7 @@ func (s *GmailConsentService) RecordConsent(req *GmailConsentRequest) error {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		
+
 		switch req.ConsentType {
 		case "gmail_access":
 			gmailConsent.GmailConsent = req.Granted
@@ -82,17 +83,17 @@ func (s *GmailConsentService) RecordConsent(req *GmailConsentRequest) error {
 		default:
 			return fmt.Errorf("unknown consent type: %s", req.ConsentType)
 		}
-		
+
 		return s.db.Create(&gmailConsent).Error
 	} else if result.Error != nil {
 		return fmt.Errorf("failed to check existing consent: %w", result.Error)
 	}
-	
+
 	// Update existing consent record
 	updates := map[string]interface{}{
 		"updated_at": now,
 	}
-	
+
 	switch req.ConsentType {
 	case "gmail_access":
 		updates["gmail_consent"] = req.Granted
@@ -108,7 +109,7 @@ func (s *GmailConsentService) RecordConsent(req *GmailConsentRequest) error {
 	default:
 		return fmt.Errorf("unknown consent type: %s", req.ConsentType)
 	}
-	
+
 	return s.db.Model(&gmailConsent).Updates(updates).Error
 }
 
@@ -165,68 +166,19 @@ func (s *GmailConsentService) RevokeConsent(userID uuid.UUID, consentType string
 
 // GetUserPreferences retrieves Gmail preferences for a user
 func (s *GmailConsentService) GetUserPreferences(userID uuid.UUID) (*GmailUserPreferences, error) {
-	var userPrefs models.UserPreferences
-	result := s.db.Where("user_id = ?", userID).First(&userPrefs)
-	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			// Return default preferences
-			return &GmailUserPreferences{
-				UserID:              userID,
-				AutoSync:            true,
-				SyncFrequencyHours:  1,
-				EnableAIAnalysis:    true,
-				EnableNotifications: true,
-				DataRetentionDays:   365,
-				SyncLabels:          []string{"INBOX", "SENT"},
-				ExcludeLabels:       []string{"SPAM", "TRASH"},
-			}, nil
-		}
-		return nil, fmt.Errorf("failed to get user preferences: %w", result.Error)
-	}
-
-	// Convert model to service struct
-	prefs := &GmailUserPreferences{
+	// Return default preferences (user_preferences table removed)
+	return &GmailUserPreferences{
 		UserID:              userID,
-		AutoSync:            userPrefs.AutoFollowUpEnabled, // Use available field
-		SyncFrequencyHours:  1, // Default value
-		EnableAIAnalysis:    userPrefs.AIResponseEnabled, // Use available field
-		EnableNotifications: userPrefs.EmailNotifications, // Use available field
-		DataRetentionDays:   365, // Default value
+		AutoSync:            true,
+		SyncFrequencyHours:  1,
+		EnableAIAnalysis:    true,
+		EnableNotifications: true,
+		DataRetentionDays:   365,
 		SyncLabels:          []string{"INBOX", "SENT"},
 		ExcludeLabels:       []string{"SPAM", "TRASH"},
-	}
-
-	return prefs, nil
+	}, nil
 }
 
-// UpdateUserPreferences updates Gmail preferences for a user
-func (s *GmailConsentService) UpdateUserPreferences(userID uuid.UUID, prefs *GmailUserPreferences) error {
-	// Check if preferences exist
-	var userPrefs models.UserPreferences
-	result := s.db.Where("user_id = ?", userID).First(&userPrefs)
-	
-	updates := map[string]interface{}{
-		"auto_followup_enabled": prefs.AutoSync,
-		"ai_response_enabled":   prefs.EnableAIAnalysis,
-		"email_notifications":   prefs.EnableNotifications,
-	}
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Create new preferences
-		newPrefs := models.UserPreferences{
-			UserID:               userID,
-			AutoFollowUpEnabled:  prefs.AutoSync,
-			AIResponseEnabled:    prefs.EnableAIAnalysis,
-			EmailNotifications:   prefs.EnableNotifications,
-		}
-		return s.db.Create(&newPrefs).Error
-	} else if result.Error != nil {
-		return fmt.Errorf("failed to get user preferences: %w", result.Error)
-	}
-
-	// Update existing preferences
-	return s.db.Model(&userPrefs).Updates(updates).Error
-}
 
 // IsConsentValid checks if user consent is still valid
 func (s *GmailConsentService) IsConsentValid(userID uuid.UUID) (bool, error) {
@@ -264,6 +216,6 @@ func (s *GmailConsentService) CleanupExpiredConsents() error {
 		Updates(map[string]interface{}{
 			"gmail_consent":      false,
 			"gmail_sync_enabled": false,
-			"updated_at":        time.Now(),
+			"updated_at":         time.Now(),
 		}).Error
 }

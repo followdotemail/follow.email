@@ -55,11 +55,12 @@ The Follow Email Backend is a comprehensive email management and automation syst
 **Models** (`internal/models/`)
 - `User`: User account information
 - `OAuthToken`: OAuth access/refresh tokens
-- `UserPreferences`: User settings and preferences
 - `Email`: Email metadata and content
 - `FollowUpTemplate`: Email template definitions
 - `FollowUpSchedule`: Scheduled follow-up tasks
 - `EmailAnalytics`: Email interaction metrics
+- `GmailConsent`: Gmail OAuth consent and sync metadata
+- `UserPrivacyMetadata`: GDPR/CCPA compliance data
 
 **Database Service** (`internal/database/`)
 - GORM-based ORM with PostgreSQL

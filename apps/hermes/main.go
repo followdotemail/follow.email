@@ -31,6 +31,7 @@
 //	     description: Bearer token for authentication
 //
 // swagger:meta
+
 package main
 
 import (
@@ -160,9 +161,13 @@ func main() {
 	// Initialize privacy service
 	privacyService := services.NewPrivacyService(db, storageService)
 
+	// Initialize label service
+	labelService := services.NewLabelService(db, gmailOAuthService, gmailTokenService)
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(cfg, db)
 	emailHandler := handlers.NewEmailHandler(db, emailSyncService, aiService, qstashService, storageService, gmailTokenService, gmailSyncService)
+	labelHandler := handlers.NewLabelHandler(db, labelService) 
 	privacyHandler := handlers.NewPrivacyHandler(privacyService)
 	gmailConsentHandler := handlers.NewGmailConsentHandler(cfg, db, gmailOAuthService, qstashService)
 	webhookHandler := handlers.NewWebhookHandler(cfg, db, emailSyncService, aiService, gmailSyncService)
@@ -182,7 +187,7 @@ func main() {
 	// Gmail routes - callback must be public, others require auth
 	routes.SetupGmailRoutes(protected, public, gmailConsentHandler)
 
-	routes.SetupProtectedRoutes(protected, privacyHandler, gmailConsentHandler, emailHandler)
+	routes.SetupProtectedRoutes(protected, privacyHandler, gmailConsentHandler, emailHandler, labelHandler)
 	routes.SetupProtectedAuthRoutes(protected, authHandler)
 
 	// Serve Swagger UI

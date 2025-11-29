@@ -18,12 +18,14 @@ import (
 
 	"follow-email-backend/internal/models"
 	"follow-email-backend/pkg/email"
+	gmailpkg "follow-email-backend/pkg/gmail"
 	"follow-email-backend/pkg/oauth"
 	"follow-email-backend/pkg/storage"
 
 	"github.com/google/uuid"
 	"google.golang.org/api/gmail/v1"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GmailSyncService handles Gmail email synchronization
@@ -90,6 +92,71 @@ func NewGmailSyncService(db *gorm.DB, gmailOAuthService *oauth.GmailOAuthService
 	}
 }
 
+// SyncUserLabels fetches all user-created labels from Gmail and upserts them to the database
+func (s *GmailSyncService) SyncUserLabels(ctx context.Context, userID uuid.UUID, service *gmail.Service) error {
+	log.Printf("Syncing user labels for user %s", userID)
+
+	// Fetch all labels from Gmail API
+	labelsResponse, err := service.Users.Labels.List("me").Context(ctx).Do()
+	if err != nil {
+		return fmt.Errorf("failed to list Gmail labels: %w", err)
+	}
+
+	// Collect user-created labels to upsert
+	var labelsToUpsert []models.UserLabel
+	for _, label := range labelsResponse.Labels {
+		// Skip system labels - we only store user-created labels
+		if label.Type == "system" {
+			continue
+		}
+
+		// Extract color if present
+		var color models.LabelColor
+		if label.Color != nil {
+			color = models.LabelColor{
+				BackgroundColor: label.Color.BackgroundColor,
+				TextColor:       label.Color.TextColor,
+			}
+		}
+
+		// Get visibility settings with defaults
+		messageListVisibility := label.MessageListVisibility
+		if messageListVisibility == "" {
+			messageListVisibility = "show"
+		}
+		labelListVisibility := label.LabelListVisibility
+		if labelListVisibility == "" {
+			labelListVisibility = "labelShow"
+		}
+
+		labelsToUpsert = append(labelsToUpsert, models.UserLabel{
+			UserID:                userID,
+			GmailLabelID:          label.Id,
+			LabelName:             label.Name,
+			Color:                 color,
+			MessageListVisibility: messageListVisibility,
+			LabelListVisibility:   labelListVisibility,
+			CreatedAt:             time.Now(),
+			UpdatedAt:             time.Now(),
+		})
+	}
+
+	// Batch upsert with ON CONFLICT
+	if len(labelsToUpsert) > 0 {
+		err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "gmail_label_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"label_name", "color", "message_list_visibility", "label_list_visibility", "updated_at"}),
+		}).Create(&labelsToUpsert).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to upsert labels: %w", err)
+		}
+	}
+
+	log.Printf("Successfully synced %d user labels for user %s", len(labelsToUpsert), userID)
+	return nil
+}
+
 // SyncUserEmails performs Gmail synchronization for a specific user
 func (s *GmailSyncService) SyncUserEmails(ctx context.Context, req *GmailSyncRequest) (*GmailSyncResult, error) {
 	result := &GmailSyncResult{
@@ -144,10 +211,17 @@ func (s *GmailSyncService) SyncUserEmails(ctx context.Context, req *GmailSyncReq
 func (s *GmailSyncService) performFullSync(ctx context.Context, service *gmail.Service, req *GmailSyncRequest, result *GmailSyncResult, user *models.User, gmailConsent *models.GmailConsent) (*GmailSyncResult, error) {
 	log.Printf("Performing full Gmail sync for user %s", req.UserID)
 
+	// Sync user labels first (before syncing emails)
+	if err := s.SyncUserLabels(ctx, req.UserID, service); err != nil {
+		log.Printf("Warning: Failed to sync user labels for user %s: %v", req.UserID, err)
+		// Don't fail the entire sync - just log the warning and continue
+		result.Errors = append(result.Errors, fmt.Sprintf("Label sync warning: %v", err))
+	}
+
 	// Set default max results if not specified
 	maxResults := req.MaxResults
 	if maxResults == 0 {
-		maxResults = 100 // Default batch size
+		maxResults = 1000 // Default batch size
 	}
 
 	// Build query
@@ -459,14 +533,6 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 		sentAt = time.Now()
 	}
 
-	// Serialize labels to JSON for storage.
-	var labelsJSON string
-	if len(message.LabelIds) > 0 {
-		if labelsBytes, err := json.Marshal(message.LabelIds); err == nil {
-			labelsJSON = string(labelsBytes)
-		}
-	}
-
 	// Determine sync version (clamped to int range).
 	syncVersion := 1
 	if message.HistoryId > 0 {
@@ -476,6 +542,27 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 			syncVersion = int(message.HistoryId)
 		}
 	}
+
+	parsedLabels := gmailpkg.ParseGmailLabels(message.LabelIds)
+
+	// DEBUG: Log parsed labels for this email
+	log.Printf("DEBUG: Email %s - Raw LabelIds: %v", message.Id, message.LabelIds)
+	log.Printf("DEBUG: Email %s - Category: %s, SystemLabels: %v, GmailUserLabelIDs: %v",
+		message.Id, parsedLabels.Category, parsedLabels.SystemLabels, parsedLabels.GmailUserLabelIDs)
+
+	var userLabelIDs []int
+	if len(parsedLabels.GmailUserLabelIDs) > 0 {
+		var labels []models.UserLabel
+		s.db.Where("user_id = ? AND gmail_label_id IN ?", userID, parsedLabels.GmailUserLabelIDs).Select("id").Find(&labels)
+
+		log.Printf("DEBUG: Email %s - Found %d matching labels in DB for GmailUserLabelIDs", message.Id, len(labels))
+
+		for _, label := range labels {
+			userLabelIDs = append(userLabelIDs, label.ID)
+		}
+	}
+
+	log.Printf("DEBUG: Email %s - Final userLabelIDs: %v (JSON: %s)", message.Id, userLabelIDs, gmailpkg.ToJson(userLabelIDs))
 
 	return &models.Email{
 		UserID:         userID,
@@ -492,7 +579,9 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 		EmailSize:      int64(message.SizeEstimate),
 		S3BodyKey:      "", // Will be set when storing body in S3
 		HasAttachments: len(message.Payload.Parts) > 1,
-		Labels:         labelsJSON,
+		Category:       parsedLabels.Category,
+		SystemLabels:   gmailpkg.ToJson(parsedLabels.SystemLabels),
+		UserLabelIDs:   gmailpkg.ToJson(userLabelIDs),
 		LastSyncAt:     time.Now(),
 		SyncVersion:    syncVersion,
 		CreatedAt:      time.Now(),
@@ -511,26 +600,25 @@ func (s *GmailSyncService) extractEmailContent(payload *gmail.MessagePart) Email
 }
 
 // decodeBodyData converts Gmail's base64url body data into HTML and plain-text variants.
-func decodeBodyDataToHTML(bodyData, mimeType string) (string) {
+func decodeBodyDataToHTML(bodyData, mimeType string) string {
 	if bodyData == "" {
 		return bodyData
 	}
 
 	switch mimeType {
-		case "text/html":
-			decodedData, err := base64.URLEncoding.DecodeString(bodyData)
-			if err != nil {
-				return ""
-			}
-			
-			return email.DecodeHTMLEntities(string(decodedData))
-		case "text/plain":
-			return bodyData
-		default:
-			return bodyData
+	case "text/html":
+		decodedData, err := base64.URLEncoding.DecodeString(bodyData)
+		if err != nil {
+			return ""
+		}
+
+		return email.DecodeHTMLEntities(string(decodedData))
+	case "text/plain":
+		return bodyData
+	default:
+		return bodyData
 	}
 
-	
 }
 
 func (s *GmailSyncService) inlineCIDImages(ctx context.Context, service *gmail.Service, message *gmail.Message, html string) string {

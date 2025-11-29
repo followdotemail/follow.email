@@ -4,6 +4,7 @@ import (
 	// "encoding/json"
 	"fmt"
 	"net/http"
+
 	// "os"
 	// "path/filepath"
 	"strconv"
@@ -73,56 +74,27 @@ func (h *EmailHandler) getUserUUIDFromClerkID(clerkID string) (uuid.UUID, error)
 // NEED TO CHECK THIS CODE MANUALLY
 // SyncEmailsRequest represents the request body for email synchronization
 type SyncEmailsRequest struct {
-	// Email provider (google, microsoft)
-	// example: google
-	Provider string `json:"provider" binding:"required"`
-
-	// Last sync timestamp for incremental sync
-	// example: 2023-01-01T00:00:00Z
+	Provider     string     `json:"provider" binding:"required"`
+	SyncType     string     `json:"sync_type,omitempty"` // "full" or "incremental" (default: incremental)
 	LastSyncTime *time.Time `json:"last_sync_time,omitempty"`
-
-	// Gmail history ID for incremental sync
-	// example: 12345
-	HistoryID string `json:"history_id,omitempty"`
-
-	// Microsoft delta token for incremental sync
-	// example: abc123
-	DeltaToken string `json:"delta_token,omitempty"`
+	HistoryID    string     `json:"history_id,omitempty"`
+	DeltaToken   string     `json:"delta_token,omitempty"`
 }
 
 // NEED TO CHECK THIS CODE MANUALLY
 // AnalyzeEmailRequest represents the request body for email analysis
 type AnalyzeEmailRequest struct {
-	// Email subject
-	// example: Meeting Request
 	Subject string `json:"subject" binding:"required"`
-
-	// Sender email address
-	// example: sender@example.com
 	FromEmail string `json:"from_email" binding:"required"`
-
-	// Email body content
-	// example: I would like to schedule a meeting...
 	Body string `json:"body" binding:"required"`
 }
 
 // NEED TO CHECK THIS CODE MANUALLY
 // GenerateResponseRequest represents the request body for response generation
 type GenerateResponseRequest struct {
-	// Original email subject
-	// example: Meeting Request
 	OriginalSubject string `json:"original_subject" binding:"required"`
-
-	// Original email body
-	// example: I would like to schedule a meeting...
 	OriginalBody string `json:"original_body" binding:"required"`
-
-	// Sender email address
-	// example: sender@example.com
 	FromEmail string `json:"from_email" binding:"required"`
-
-	// Additional context for response generation
-	// example: I am available on weekdays after 2 PM
 	UserContext string `json:"user_context,omitempty"`
 }
 
@@ -171,25 +143,26 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 
 	// Validate that user has connected their account for the provider
 	switch req.Provider {
-		case "google":
-			_, err := h.gmailTokenService.GetValidToken(c.Request.Context(), userID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "No valid Gmail token found. Please connect your Gmail account first."})
-				return
-			}
-		case "microsoft":
-			// TODO: Implement Microsoft token validation
-			c.JSON(http.StatusNotImplemented, gin.H{"error": "Microsoft provider not yet implemented"})
+	case "google":
+		_, err := h.gmailTokenService.GetValidToken(c.Request.Context(), userID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No valid Gmail token found. Please connect your Gmail account first."})
 			return
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid provider. Supported providers: google, microsoft"})
-			return
+		}
+	case "microsoft":
+		// TODO: Implement Microsoft token validation
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "Microsoft provider not yet implemented"})
+		return
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid provider. Supported providers: google, microsoft"})
+		return
 	}
 
 	// Queue the email sync job using QStash
 	syncMessage := queue.EmailSyncMessage{
 		UserID:    userID.String(),
 		MessageID: "", // Optional message ID for incremental sync
+		SyncType:  req.SyncType,
 	}
 
 	err = h.qstashService.PublishEmailSync(c.Request.Context(), syncMessage)
@@ -390,65 +363,21 @@ func (h *EmailHandler) ProcessEmailContent(c *gin.Context) {
 
 // EmailQueryRequest represents the request parameters for querying emails
 type EmailQueryRequest struct {
-	// Page number for pagination (starts from 1)
-	// example: 1
-	Page int `form:"page" json:"page"`
-
-	// Number of emails per page (max 100)
-	// example: 20
-	Limit int `form:"limit" json:"limit"`
-
-	// Filter by sender email
-	// example: sender@example.com
-	FromEmail string `form:"from_email" json:"from_email"`
-
-	// Filter by subject (partial match)
-	// example: meeting
-	Subject string `form:"subject" json:"subject"`
-
-	// Filter by date range - start date
-	// example: 2023-01-01T00:00:00Z
-	StartDate *time.Time `form:"start_date" json:"start_date"`
-
-	// Filter by date range - end date
-	// example: 2023-12-31T23:59:59Z
-	EndDate *time.Time `form:"end_date" json:"end_date"`
-
-	// Filter by read status
-	// example: false
-	IsRead *bool `form:"is_read" json:"is_read"`
-
-	// Filter by importance
-	// example: true
-	IsImportant *bool `form:"is_important" json:"is_important"`
-
-	// Filter by attachment presence
-	// example: true
-	HasAttachments *bool `form:"has_attachments" json:"has_attachments"`
-
-	// Filter by AI sentiment
-	// example: positive
-	AISentiment string `form:"ai_sentiment" json:"ai_sentiment"`
-
-	// Filter by AI priority
-	// example: high
-	AIPriority string `form:"ai_priority" json:"ai_priority"`
-
-	// Filter by follow-up requirement
-	// example: true
-	RequiresFollowUp *bool `form:"requires_followup" json:"requires_followup"`
-
-	// Filter by follow-up status
-	// example: pending
-	FollowUpStatus string `form:"followup_status" json:"followup_status"`
-
-	// Sort field (sent_at, received_at, subject, from_email)
-	// example: received_at
-	SortBy string `form:"sort_by" json:"sort_by"`
-
-	// Sort order (asc, desc)
-	// example: desc
-	SortOrder string `form:"sort_order" json:"sort_order"`
+	Page             int        `form:"page" json:"page"`
+	Limit            int        `form:"limit" json:"limit"`
+	FromEmail        string     `form:"from_email" json:"from_email"`
+	Subject          string     `form:"subject" json:"subject"`
+	StartDate        *time.Time `form:"start_date" json:"start_date"`
+	EndDate          *time.Time `form:"end_date" json:"end_date"`
+	IsRead           *bool      `form:"is_read" json:"is_read"`
+	IsImportant      *bool      `form:"is_important" json:"is_important"`
+	HasAttachments   *bool      `form:"has_attachments" json:"has_attachments"`
+	AISentiment      string     `form:"ai_sentiment" json:"ai_sentiment"`
+	AIPriority       string     `form:"ai_priority" json:"ai_priority"`
+	RequiresFollowUp *bool      `form:"requires_followup" json:"requires_followup"`
+	FollowUpStatus   string     `form:"followup_status" json:"followup_status"`
+	SortBy           string     `form:"sort_by" json:"sort_by"`
+	SortOrder        string     `form:"sort_order" json:"sort_order"`
 }
 
 // FilteredEmail represents a filtered email response with only required fields
@@ -467,7 +396,9 @@ type FilteredEmail struct {
 	IsRead         bool       `json:"is_read"`
 	IsImportant    bool       `json:"is_important"`
 	HasAttachments bool       `json:"has_attachments"`
-	Labels         string     `json:"labels"`
+	Category       string     `json:"category"`
+	SystemLabels   string     `json:"system_labels"`
+	UserLabelIDs   string     `json:"user_label_ids"`
 	LastSyncAt     *time.Time `json:"last_sync_at"`
 }
 
@@ -489,7 +420,9 @@ type EmailDetailMetadata struct {
 	IsRead           bool       `json:"is_read"`
 	IsImportant      bool       `json:"is_important"`
 	HasAttachments   bool       `json:"has_attachments"`
-	Labels           string     `json:"labels"`
+	Category         string     `json:"category"`
+	SystemLabels     string     `json:"system_labels"`
+	UserLabelIDs     string     `json:"user_label_ids"`
 	AISummary        string     `json:"ai_summary"`
 	AISentiment      string     `json:"ai_sentiment"`
 	AIPriority       string     `json:"ai_priority"`
@@ -511,38 +444,25 @@ type EmailAttachmentResponse struct {
 // EmailDetailResponse represents a combined email metadata + content payload
 type EmailDetailResponse struct {
 	Email       EmailDetailMetadata       `json:"email"`
-	Body        string                    `json:"body"`      // Deprecated: use BodyHTML instead
+	Body        string                    `json:"body"` // Deprecated: use BodyHTML instead
 	Attachments []EmailAttachmentResponse `json:"attachments"`
 	Source      string                    `json:"source"`
 }
 
 // EmailQueryResponse represents the response for email queries
 type EmailQueryResponse struct {
-	// List of emails
-	Emails []FilteredEmail `json:"emails"`
-
-	// Pagination information
-	Pagination PaginationInfo `json:"pagination"`
+	Emails     []FilteredEmail    `json:"emails"`
+	Pagination PaginationInfo     `json:"pagination"`
+	UserLabels []models.UserLabel `json:"user_labels,omitempty"`
 }
 
 // PaginationInfo represents pagination metadata
 type PaginationInfo struct {
-	// Current page number
 	Page int `json:"page"`
-
-	// Number of items per page
 	Limit int `json:"limit"`
-
-	// Total number of items
 	Total int64 `json:"total"`
-
-	// Total number of pages
 	TotalPages int `json:"total_pages"`
-
-	// Whether there is a next page
 	HasNext bool `json:"has_next"`
-
-	// Whether there is a previous page
 	HasPrev bool `json:"has_prev"`
 }
 
@@ -691,7 +611,9 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 			IsRead:         email.IsRead,
 			IsImportant:    email.IsImportant,
 			HasAttachments: email.HasAttachments,
-			Labels:         email.Labels,
+			Category:       email.Category,
+			SystemLabels:   email.SystemLabels,
+			UserLabelIDs:   email.UserLabelIDs,
 			LastSyncAt:     &email.LastSyncAt,
 		}
 	}
@@ -700,6 +622,12 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 	totalPages := int((total + int64(req.Limit) - 1) / int64(req.Limit))
 	hasNext := req.Page < totalPages
 	hasPrev := req.Page > 1
+
+	var userLabels []models.UserLabel
+	if err := h.db.Where("user_id = ?", userID).Find(&userLabels).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user labels"})
+		return
+	}
 
 	response := EmailQueryResponse{
 		Emails: filteredEmails,
@@ -711,6 +639,7 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 			HasNext:    hasNext,
 			HasPrev:    hasPrev,
 		},
+		UserLabels: userLabels,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -773,7 +702,9 @@ func (h *EmailHandler) GetEmailByID(c *gin.Context) {
 		IsRead:           email.IsRead,
 		IsImportant:      email.IsImportant,
 		HasAttachments:   email.HasAttachments,
-		Labels:           email.Labels,
+		Category:         email.Category,
+		SystemLabels:     email.SystemLabels,
+		UserLabelIDs:     email.UserLabelIDs,
 		AISummary:        email.AISummary,
 		AISentiment:      email.AISentiment,
 		AIPriority:       email.AIPriority,
@@ -830,20 +761,20 @@ func (h *EmailHandler) GetEmailByID(c *gin.Context) {
 	bodyHTML := content.HTML
 
 	// NEED TO REMOVE THIS PART OF CODE BEFORE DEPLOYING TO PRODUCTION
-	// Save full Gmail response to JSON file 
+	// Save full Gmail response to JSON file
 	// saveDir := filepath.Join("../..", "gmail_response")
 	// if err := os.MkdirAll(saveDir, 0755); err != nil {
 	// 	log.Printf("[WARN] Failed to create gmail_response directory: %v", err)
 	// } else {
 	// 	jsonPath := filepath.Join(saveDir, fmt.Sprintf("%s_%s.json", emailID.String(), strings.ReplaceAll(email.Subject, " ", "_")))
 	// 	htmlPath := filepath.Join(saveDir, fmt.Sprintf("%s_%s.html", emailID.String(), strings.ReplaceAll(email.Subject, " ", "_")))
-		
+
 	// 	if err := os.WriteFile(htmlPath, []byte(bodyHTML), 0644); err != nil {
 	// 		log.Printf("[WARN] Failed to save Gmail response to %s: %v", htmlPath, err)
 	// 	} else {
 	// 		log.Printf("[INFO] Saved Gmail response to %s", htmlPath)
 	// 	}
-		
+
 	// 	jsonData, err := json.MarshalIndent(fullMessage, "", "  ")
 	// 	if err != nil {
 	// 		log.Printf("[WARN] Failed to marshal Gmail response to JSON: %v", err)

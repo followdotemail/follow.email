@@ -178,8 +178,12 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 
 	// Create sync request
 	syncReq := &services.GmailSyncRequest{
-		UserID: userID,
+		UserID:   userID,
+		FullSync: msg.SyncType == "full",
 	}
+
+	// Add this debug log after line 182:
+	fmt.Printf("DEBUG: Received SyncType='%s', FullSync=%v\n", msg.SyncType, syncReq.FullSync)
 
 	// Process email sync using the Gmail sync service
 	fmt.Printf("Processing email sync for user: %s, message: %s\n", msg.UserID, msg.MessageID)

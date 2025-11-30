@@ -95,7 +95,7 @@ class CommandResult:
 env_path = os.path.join(os.path.dirname(__file__), '../../../.env')
 load_dotenv(env_path)
 print(f"Loading environment from: {os.path.abspath(env_path)}")
-webhook_url = "https://discordapp.com/api/webhooks/1440730059056091147/b7hiFgSWYS3kb1a6GUt86CQFRLHLjWSV5YegU1BEw9PaBlAKRtpZViHX5L9aF79vLAfp"
+webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
 
 class Colors:
     """ANSI color codes for terminal output"""

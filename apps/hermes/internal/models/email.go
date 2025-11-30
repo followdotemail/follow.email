@@ -1,8 +1,9 @@
 package models
 
 import (
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Email struct {
@@ -31,7 +32,9 @@ type Email struct {
 	HasAttachments bool   `json:"has_attachments" gorm:"default:false"`
 	EmailSize      int64  `json:"email_size"`
 	MimeType       string `json:"mime_type"`
-	Labels         string `json:"labels" gorm:"type:jsonb"` // JSON array of Gmail label IDs
+	Category       string `json:"category" gorm:"type:varchar(50)"`
+	SystemLabels   string `json:"system_labels" gorm:"type:jsonb;default:'[]'"`
+	UserLabelIDs   string `json:"user_label_ids" gorm:"type:jsonb;default:'[]'"` // References user_labels.id
 
 	// Follow-up tracking
 	RequiresFollowUp bool       `json:"requires_followup" gorm:"default:false"`

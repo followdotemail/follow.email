@@ -922,7 +922,18 @@ paths:
       summary: Synchronize emails from provider
       description: |
         Initiates an email synchronization process for the authenticated user.
-        Supports both full sync and incremental sync based on the provided parameters.
+        
+        **Sync Types:**
+        - `incremental` (default): Syncs only new changes since last sync
+        - `full`: Syncs all emails and user labels from scratch
+        
+        **Full Sync Features:**
+        - Syncs all user-created labels from Gmail
+        - Populates category (personal, social, promotions, updates, forums)
+        - Populates system_labels (INBOX, SENT, UNREAD, etc.)
+        - Populates user_label_ids (references to user_labels table)
+        
+        First-time sync is always full regardless of sync_type parameter.
       security:
         - bearer: []
       parameters:
@@ -1019,7 +1030,13 @@ paths:
       description: |
         Retrieves a paginated list of emails for the authenticated user with advanced
         filtering, sorting, and search capabilities. Supports filtering by sender, subject,
-        date range, read status, importance, attachments, AI analysis results, and follow-up status.
+        date range, read status, importance, attachments, AI analysis results, follow-up status,
+        category, system labels, and user labels.
+        
+        **Default Filters:**
+        - `category`: "personal" (shows personal emails by default)
+        - `system_label`: INBOX, IMPORTANT, or UNREAD (shows emails in these system labels)
+        - Use `no_defaults=true` to bypass all default filters
       security:
         - bearer: []
       parameters:
@@ -1096,6 +1113,38 @@ paths:
           type: string
           enum: [pending, sent, completed, cancelled]
           example: "pending"
+        - name: category
+          in: query
+          description: |
+            Filter by Gmail category. Default is "personal".
+            Categories are automatically assigned by Gmail based on email content.
+          type: string
+          enum: [personal, social, promotions, updates, forums]
+          default: personal
+          example: "personal"
+        - name: system_label
+          in: query
+          description: |
+            Filter by system label. Default filters by INBOX, IMPORTANT, or UNREAD.
+            System labels are Gmail's built-in labels.
+          type: string
+          enum: [INBOX, SENT, DRAFT, SPAM, TRASH, STARRED, IMPORTANT, UNREAD, ARCHIVED, CHAT]
+          example: "INBOX"
+        - name: user_label_id
+          in: query
+          description: |
+            Filter by user-created label ID. No default filter.
+            Get available label IDs from the user_labels array in the response.
+          type: integer
+          example: 1
+        - name: no_defaults
+          in: query
+          description: |
+            If true, bypasses default category and system_label filters.
+            Use this to get ALL emails regardless of category or system labels.
+          type: boolean
+          default: false
+          example: false
         - name: sort_by
           in: query
           description: Field to sort by
@@ -1165,10 +1214,18 @@ paths:
                     has_attachments:
                       type: boolean
                       example: true
-                    labels:
+                    category:
                       type: string
-                      description: JSON array of Gmail label IDs
-                      example: '["INBOX","IMPORTANT"]'
+                      description: Gmail category (personal, social, promotions, updates, forums)
+                      example: "personal"
+                    system_labels:
+                      type: string
+                      description: JSON array of system labels (INBOX, SENT, UNREAD, etc.)
+                      example: '["INBOX","UNREAD","IMPORTANT"]'
+                    user_label_ids:
+                      type: string
+                      description: JSON array of user label IDs from user_labels table
+                      example: '[1, 2]'
                     last_sync_at:
                       type: string
                       format: date-time
@@ -1194,6 +1251,44 @@ paths:
                   has_prev:
                     type: boolean
                     example: false
+              user_labels:
+                type: array
+                description: List of user-created labels for this user
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                      description: Label ID (used for filtering)
+                      example: 1
+                    user_id:
+                      type: string
+                      format: uuid
+                      example: "550e8400-e29b-41d4-a716-446655440000"
+                    gmail_label_id:
+                      type: string
+                      description: Gmail's internal label ID
+                      example: "Label_7208110601237989230"
+                    label_name:
+                      type: string
+                      description: User-friendly label name
+                      example: "Work"
+                    color:
+                      type: object
+                      description: Label color from Gmail
+                      properties:
+                        background_color:
+                          type: string
+                          example: "#16a765"
+                        text_color:
+                          type: string
+                          example: "#ffffff"
+                    message_list_visibility:
+                      type: string
+                      example: "show"
+                    label_list_visibility:
+                      type: string
+                      example: "labelShow"
         400:
           description: Bad request - invalid query parameters
           schema:
@@ -1570,6 +1665,17 @@ definitions:
         type: string
         description: Email provider name (gmail, outlook, etc.)
         example: gmail
+      sync_type:
+        type: string
+        description: |
+          Type of sync to perform:
+          - "full": Syncs all emails and user labels from scratch
+          - "incremental": Only syncs changes since last sync (default)
+          
+          First-time sync is always full. Use "full" to refresh all data.
+        enum: [full, incremental]
+        default: incremental
+        example: "full"
       last_sync_time:
         type: string
         format: date-time

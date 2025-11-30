@@ -52,15 +52,50 @@ import json
 import argparse
 import subprocess
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
+from dataclasses import dataclass
+from enum import Enum
 import requests
 from dotenv import load_dotenv
+
+
+class CommandCriticality(Enum):
+    """Classification of command criticality for error handling"""
+    CRITICAL = "critical"           # Must succeed, retry with backoff
+    IMPORTANT = "important"         # Should succeed, retry once, warn on failure
+    OPTIONAL = "optional"           # Nice to have, no retry, ignore on failure
+
+
+@dataclass
+class CommandConfig:
+    """Configuration for command execution"""
+    description: str
+    command: str
+    criticality: CommandCriticality = CommandCriticality.IMPORTANT
+    timeout: int = 300              # Default timeout in seconds
+    max_retries: int = 3            # Maximum retry attempts for critical commands
+    initial_delay: float = 5.0      # Initial delay before retry (seconds)
+    max_delay: float = 60.0         # Maximum delay between retries
+    show_output: bool = False       # Whether to show command output
+    check_running: bool = False     # Check if command is still running after timeout
+
+
+@dataclass 
+class CommandResult:
+    """Result of command execution"""
+    success: bool
+    stdout: str = ""
+    stderr: str = ""
+    return_code: int = -1
+    timed_out: bool = False
+    still_running: bool = False
+    attempts: int = 1
 
 # Load environment variables from root .env file
 env_path = os.path.join(os.path.dirname(__file__), '../../../.env')
 load_dotenv(env_path)
 print(f"Loading environment from: {os.path.abspath(env_path)}")
-webhook_url = "https://discordapp.com/api/webhooks/1440730059056091147/b7hiFgSWYS3kb1a6GUt86CQFRLHLjWSV5YegU1BEw9PaBlAKRtpZViHX5L9aF79vLAfp"
+webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
 
 class Colors:
     """ANSI color codes for terminal output"""
@@ -478,13 +513,20 @@ class InstanceProvisioner:
         return False
     
     def run_ssh_command(self, command: str, show_output: bool = True, timeout: int = 300) -> bool:
-        """Run a command via SSH"""
+        """Run a command via SSH (simple wrapper for backward compatibility)"""
+        result = self._execute_ssh_command(command, show_output, timeout)
+        return result.success
+
+    def _execute_ssh_command(self, command: str, show_output: bool = True, timeout: int = 300) -> CommandResult:
+        """Execute SSH command and return detailed result"""
         try:
             result = subprocess.run(
                 [
                     'ssh',
                     '-o', 'StrictHostKeyChecking=no',
                     '-o', 'UserKnownHostsFile=/dev/null',
+                    '-o', 'ServerAliveInterval=30',
+                    '-o', 'ServerAliveCountMax=3',
                     '-i', self.ssh_key_path,
                     f'{self.ssh_user}@{self.ip_address}',
                     command
@@ -507,78 +549,266 @@ class InstanceProvisioner:
                     print(f"{Colors.FAIL}Command failed: {result.stderr}{Colors.ENDC}")
                 else:
                     print(f"{Colors.FAIL}Command failed with return code {result.returncode}{Colors.ENDC}")
-                return False
+                return CommandResult(
+                    success=False,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    return_code=result.returncode
+                )
             
-            return True
+            return CommandResult(
+                success=True,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                return_code=result.returncode
+            )
         
         except subprocess.TimeoutExpired:
             print(f"{Colors.FAIL}SSH command timed out after {timeout}s{Colors.ENDC}")
-            return False
+            return CommandResult(success=False, timed_out=True)
         except Exception as e:
             print(f"{Colors.FAIL}SSH command failed: {e}{Colors.ENDC}")
-            return False
+            return CommandResult(success=False, stderr=str(e))
+
+    def _check_command_still_running(self, command_pattern: str) -> bool:
+        """Check if a command matching the pattern is still running on the server"""
+        # Use pgrep to check if process is running
+        check_cmd = f"pgrep -f '{command_pattern}' > /dev/null 2>&1 && echo 'RUNNING' || echo 'NOT_RUNNING'"
+        result = self._execute_ssh_command(check_cmd, show_output=False, timeout=30)
+        return result.success and 'RUNNING' in result.stdout
+
+    def _wait_for_command_completion(self, command_pattern: str, timeout: int = 600) -> bool:
+        """Wait for a command to complete that might still be running after timeout"""
+        print(f"{Colors.OKBLUE}Waiting for command to complete...{Colors.ENDC}")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            if not self._check_command_still_running(command_pattern):
+                print(f"{Colors.OKGREEN}Command completed.{Colors.ENDC}")
+                return True
+            print(f"  Still running... ({int(time.time() - start_time)}s elapsed)")
+            time.sleep(10)
+        
+        print(f"{Colors.WARNING}Command still running after {timeout}s wait{Colors.ENDC}")
+        return False
+
+    def run_command_with_retry(self, config: CommandConfig) -> CommandResult:
+        """
+        Execute a command with retry logic based on criticality.
+        
+        For CRITICAL commands: Retry with exponential backoff
+        For IMPORTANT commands: Retry once, then warn
+        For OPTIONAL commands: No retry, ignore failure
+        """
+        attempt = 0
+        delay = config.initial_delay
+        last_result = CommandResult(success=False)
+        
+        # Determine max retries based on criticality
+        if config.criticality == CommandCriticality.CRITICAL:
+            max_attempts = config.max_retries
+        elif config.criticality == CommandCriticality.IMPORTANT:
+            max_attempts = 2
+        else:  # OPTIONAL
+            max_attempts = 1
+        
+        while attempt < max_attempts:
+            attempt += 1
+            
+            if attempt > 1:
+                print(f"{Colors.WARNING}Retry attempt {attempt}/{max_attempts} after {delay:.1f}s delay...{Colors.ENDC}")
+                time.sleep(delay)
+                # Exponential backoff for next attempt
+                delay = min(delay * 2, config.max_delay)
+            
+            last_result = self._execute_ssh_command(
+                config.command,
+                show_output=config.show_output,
+                timeout=config.timeout
+            )
+            last_result.attempts = attempt
+            
+            if last_result.success:
+                return last_result
+            
+            # Handle timeout - check if command is still running
+            if last_result.timed_out and config.check_running:
+                # Extract a pattern from the command to check
+                cmd_pattern = config.command.split()[0] if config.command else ""
+                if cmd_pattern in ['apt-get', 'apt', 'docker', 'git']:
+                    cmd_pattern = config.command.split('&&')[0].strip() if '&&' in config.command else config.command
+                
+                if self._check_command_still_running(cmd_pattern):
+                    last_result.still_running = True
+                    print(f"{Colors.WARNING}Command timed out but still running on server{Colors.ENDC}")
+                    
+                    # Wait for completion for critical commands
+                    if config.criticality == CommandCriticality.CRITICAL:
+                        if self._wait_for_command_completion(cmd_pattern, timeout=config.timeout * 2):
+                            # Verify the command completed successfully
+                            verify_result = self._execute_ssh_command("echo 'OK'", show_output=False, timeout=30)
+                            if verify_result.success:
+                                last_result.success = True
+                                return last_result
+            
+            # Log based on criticality
+            if config.criticality == CommandCriticality.OPTIONAL:
+                print(f"{Colors.WARNING}Optional command failed, continuing...{Colors.ENDC}")
+                break
+            elif attempt >= max_attempts:
+                if config.criticality == CommandCriticality.CRITICAL:
+                    print(f"{Colors.FAIL}Critical command failed after {attempt} attempts{Colors.ENDC}")
+                else:
+                    print(f"{Colors.WARNING}Command failed after {attempt} attempts{Colors.ENDC}")
+        
+        return last_result
+
+    def run_commands_batch(self, commands: List[CommandConfig]) -> Tuple[bool, List[CommandResult]]:
+        """
+        Run a batch of commands with proper error handling.
+        Returns (overall_success, list_of_results)
+        """
+        results = []
+        overall_success = True
+        
+        for config in commands:
+            print(f"{Colors.OKBLUE}{config.description}...{Colors.ENDC}")
+            
+            result = self.run_command_with_retry(config)
+            results.append(result)
+            
+            if result.success:
+                print(f"{Colors.OKGREEN}[OK] {config.description} completed{Colors.ENDC}")
+            else:
+                if config.criticality == CommandCriticality.CRITICAL:
+                    print(f"{Colors.FAIL}[FAILED] {config.description} - Critical failure{Colors.ENDC}")
+                    overall_success = False
+                    break  # Stop on critical failure
+                elif config.criticality == CommandCriticality.IMPORTANT:
+                    print(f"{Colors.WARNING}[WARN] {config.description} - Continuing despite failure{Colors.ENDC}")
+                else:
+                    print(f"{Colors.WARNING}[SKIP] {config.description} - Optional, skipped{Colors.ENDC}")
+        
+        return overall_success, results
     
     def install_dependencies(self) -> bool:
-        """Install Docker, nginx, and other dependencies"""
+        """Install Docker, nginx, and other dependencies with retry logic"""
         print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
         print(f"{Colors.HEADER}Installing Dependencies{Colors.ENDC}")
         print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
         
         commands = [
-            # Update system
-            ("Updating system packages", "sudo apt-get update -y"),
+            # Update system - Critical, must succeed
+            CommandConfig(
+                description="Updating system packages",
+                command="sudo apt-get update -y",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=600,
+                max_retries=3,
+                check_running=True
+            ),
             
-            # Install prerequisites
-            ("Installing prerequisites", 
-             "sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common gnupg lsb-release"),
+            # Install prerequisites - Critical
+            CommandConfig(
+                description="Installing prerequisites",
+                command="sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common gnupg lsb-release",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=600,
+                max_retries=3,
+                check_running=True
+            ),
             
-            # Install Docker
-            ("Adding Docker GPG key",
-             "curl -fsSL --max-time 30 https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg"),
+            # Docker GPG key - Important (might already exist)
+            CommandConfig(
+                description="Adding Docker GPG key",
+                command="curl -fsSL --max-time 60 https://download.docker.com/linux/ubuntu/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg",
+                criticality=CommandCriticality.IMPORTANT,
+                timeout=120,
+                max_retries=3,
+                show_output=True
+            ),
             
-            ("Adding Docker repository",
-             "sudo bash -c 'echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" > /etc/apt/sources.list.d/docker.list'"),
+            # Docker repository - Important
+            CommandConfig(
+                description="Adding Docker repository",
+                command="sudo bash -c 'echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" > /etc/apt/sources.list.d/docker.list'",
+                criticality=CommandCriticality.IMPORTANT,
+                timeout=60,
+                max_retries=2,
+                show_output=True
+            ),
             
-            ("Updating package index",
-             "sudo apt-get update -y"),
+            # Update package index after adding repo - Critical
+            CommandConfig(
+                description="Updating package index",
+                command="sudo apt-get update -y",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=600,
+                max_retries=3,
+                check_running=True
+            ),
             
-            ("Installing Docker",
-             "sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin"),
+            # Install Docker - Critical
+            CommandConfig(
+                description="Installing Docker",
+                command="sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=600,
+                max_retries=3,
+                check_running=True
+            ),
             
-            ("Starting Docker service",
-             "sudo systemctl start docker && sudo systemctl enable docker"),
+            # Start Docker service - Critical
+            CommandConfig(
+                description="Starting Docker service",
+                command="sudo systemctl start docker && sudo systemctl enable docker",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=120,
+                max_retries=3
+            ),
             
-            # Install nginx
-            ("Installing nginx",
-             "sudo apt-get install -y nginx"),
+            # Install nginx - Critical
+            CommandConfig(
+                description="Installing nginx",
+                command="sudo apt-get install -y nginx",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=600,
+                max_retries=3,
+                check_running=True
+            ),
             
-            ("Enabling nginx",
-             "sudo systemctl enable nginx"),
+            # Enable nginx - Important
+            CommandConfig(
+                description="Enabling nginx",
+                command="sudo systemctl enable nginx",
+                criticality=CommandCriticality.IMPORTANT,
+                timeout=60,
+                max_retries=2
+            ),
             
-            # Install other utilities
-            ("Installing utilities",
-             "sudo apt-get install -y git curl wget htop vim"),
+            # Install utilities - Optional (nice to have)
+            CommandConfig(
+                description="Installing utilities",
+                command="sudo apt-get install -y git curl wget htop vim",
+                criticality=CommandCriticality.OPTIONAL,
+                timeout=300,
+                max_retries=1,
+                check_running=True
+            ),
         ]
         
-        for description, command in commands:
-            print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
-            # Use appropriate timeouts - shorter for quick operations, longer for package installs
-            if 'gpg' in description.lower() or 'repository' in description.lower():
-                timeout = 300  # Quick operations
-                show_cmd_output = True  # Show output for debugging
-            elif 'updating' in description.lower() or 'installing' in description.lower():
-                timeout = 600  # Package operations can take time
-                show_cmd_output = False
-            else:
-                timeout = 300  # Default
-                show_cmd_output = False
-            if not self.run_ssh_command(command, show_output=show_cmd_output, timeout=timeout):
-                print(f"{Colors.FAIL}[ERROR] Failed: {description}{Colors.ENDC}")
-                return False
-            print(f"{Colors.OKGREEN}[OK] {description} completed{Colors.ENDC}")
+        success, results = self.run_commands_batch(commands)
         
-        print(f"\n{Colors.OKGREEN}[OK] All dependencies installed successfully!{Colors.ENDC}\n")
-        return True
+        if success:
+            print(f"\n{Colors.OKGREEN}[OK] All dependencies installed successfully!{Colors.ENDC}\n")
+        else:
+            # Check which critical command failed
+            for i, (config, result) in enumerate(zip(commands, results)):
+                if not result.success and config.criticality == CommandCriticality.CRITICAL:
+                    print(f"\n{Colors.FAIL}[ERROR] Critical dependency installation failed: {config.description}{Colors.ENDC}")
+                    break
+        
+        return success
     
     def setup_nginx(self, record_name: str) -> bool:
         """Setup nginx reverse proxy"""
@@ -692,50 +922,62 @@ class InstanceProvisioner:
                 pass
         
         commands = [
-            # Skip "Creating nginx config" since it's already done via SCP
-            # ("Verifying nginx config", config_command),  # Already created, skip
-            ("Creating symbolic link", 
-             "sudo ln -sf /etc/nginx/sites-available/follow-email /etc/nginx/sites-enabled/"),
-            ("Removing default site",
-             "[ -f /etc/nginx/sites-enabled/default ] && sudo rm -f /etc/nginx/sites-enabled/default || true"),
-            ("Testing nginx config",
-             "sudo nginx -t < /dev/null 2>&1"),
-            ("Restarting nginx",
-             "sudo systemctl stop nginx 2>/dev/null; sudo systemctl start nginx && sleep 2 && sudo systemctl is-active --quiet nginx"),
+            # Creating symbolic link - Important
+            CommandConfig(
+                description="Creating symbolic link",
+                command="sudo ln -sf /etc/nginx/sites-available/follow-email /etc/nginx/sites-enabled/",
+                criticality=CommandCriticality.IMPORTANT,
+                timeout=60,
+                max_retries=2,
+                show_output=True
+            ),
+            # Removing default site - Optional (might not exist)
+            CommandConfig(
+                description="Removing default site",
+                command="[ -f /etc/nginx/sites-enabled/default ] && sudo rm -f /etc/nginx/sites-enabled/default || true",
+                criticality=CommandCriticality.OPTIONAL,
+                timeout=60,
+                max_retries=1,
+                show_output=True
+            ),
+            # Testing nginx config - Critical
+            CommandConfig(
+                description="Testing nginx config",
+                command="sudo nginx -t < /dev/null 2>&1",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=2,
+                show_output=True
+            ),
+            # Restarting nginx - Critical
+            CommandConfig(
+                description="Restarting nginx",
+                command="sudo systemctl stop nginx 2>/dev/null; sudo systemctl start nginx && sleep 2 && sudo systemctl is-active --quiet nginx",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=120,
+                max_retries=3,
+                show_output=True
+            ),
         ]
         
-        for description, command in commands:
-            print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
-            # Use appropriate timeouts - longer for service operations
-            if 'Removing' in description or 'Testing' in description:
-                timeout = 300
-            elif 'Restarting' in description:
-                timeout = 300  # Service operations can take time
-            elif 'Verifying nginx config' in description:
-                timeout = 300  # Quick file check
-                show_cmd_output = True  # Show output to debug
+        success, results = self.run_commands_batch(commands)
+        
+        if not success:
+            # Check if nginx is at least running
+            print(f"{Colors.WARNING}Checking if nginx is still running...{Colors.ENDC}")
+            check_config = CommandConfig(
+                description="Checking nginx status",
+                command="sudo systemctl is-active --quiet nginx && echo 'nginx is running' || echo 'nginx is not running'",
+                criticality=CommandCriticality.OPTIONAL,
+                timeout=60,
+                show_output=True
+            )
+            check_result = self.run_command_with_retry(check_config)
+            if 'running' in check_result.stdout:
+                print(f"{Colors.OKGREEN}Nginx is running, continuing...{Colors.ENDC}")
             else:
-                timeout = 300
-            if not self.run_ssh_command(command, show_output=True, timeout=timeout):
-                # For removing default site, it's OK if it doesn't exist
-                if 'Removing default site' in description:
-                    print(f"{Colors.WARNING}Note: Default site may not exist, continuing...{Colors.ENDC}")
-                # For verifying nginx config, it's already created, so just warn
-                elif 'Verifying nginx config' in description:
-                    print(f"{Colors.WARNING}Warning: Config verification failed, but file was already created{Colors.ENDC}")
-                # For restarting nginx, check if it's actually running
-                elif 'Restarting nginx' in description:
-                    print(f"{Colors.WARNING}Restart command failed, checking if nginx is running...{Colors.ENDC}")
-                    check_cmd = "sudo systemctl is-active --quiet nginx && echo 'nginx is running' || echo 'nginx is not running'"
-                    if self.run_ssh_command(check_cmd, show_output=True, timeout=300):
-                        print(f"{Colors.OKGREEN}Nginx is running, continuing...{Colors.ENDC}")
-                    else:
-                        print(f"{Colors.FAIL}[ERROR] Nginx is not running after restart attempt{Colors.ENDC}")
-                        return False
-                else:
-                    print(f"{Colors.FAIL}[ERROR] Failed: {description}{Colors.ENDC}")
-                    return False
-            print(f"{Colors.OKGREEN}[OK] {description} completed{Colors.ENDC}")
+                print(f"{Colors.FAIL}[ERROR] Nginx is not running{Colors.ENDC}")
+                return False
         
         # Verify nginx is running and listening
         print(f"\n{Colors.OKBLUE}Verifying nginx status...{Colors.ENDC}")
@@ -750,18 +992,23 @@ class InstanceProvisioner:
         print(f"{Colors.WARNING}Security Group ID: {os.getenv('EXCLOUD_SECURITY_GROUP_ID', 'Check your Excloud console')}{Colors.ENDC}\n")
         return True
     
-    def setup_env_file(self, local_env_path: str = None) -> bool:
+    def setup_env_file(self, record_name: str, ssl_success: bool = True, local_env_path: str = None) -> bool:
         """
-        Copy prod.env file to server and set up environment variables
+        Copy prod.env file to server and set up environment variables.
         
-        This copies the prod.env file and creates a script to export variables
-        so the application can access them.
+        This copies the prod.env file, updates BASE_URL based on the record_name
+        and SSL status, then uploads to the server.
+        
+        Args:
+            record_name: The subdomain record name (e.g., 'api' for api.follow.email)
+            ssl_success: Whether SSL was successfully installed (affects protocol)
+            local_env_path: Optional path to the local env file
         """
         print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
         print(f"{Colors.HEADER}Setting Up Environment Variables{Colors.ENDC}")
         print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
         
-        # Default to root .env file if not specified
+        # Default to prod.env file if not specified
         if local_env_path is None:
             local_env_path = os.path.join(os.path.dirname(__file__), '../prod.env')
         
@@ -771,39 +1018,86 @@ class InstanceProvisioner:
             print(f"{Colors.WARNING}Skipping env setup. You'll need to copy it manually.{Colors.ENDC}")
             return False
         
-        print(f"{Colors.OKBLUE}Copying prod.env file to server...{Colors.ENDC}")
+        # Determine protocol and BASE_URL
+        protocol = "https" if ssl_success else "http"
+        domain = f"{record_name}.follow.email"
+        base_url = f"{protocol}://{domain}"
         
-        # Use scp to copy the .env file to root of the app directory AND infra directory
-        scp_commands = [
-            (f'{self.ssh_user}@{self.ip_address}:/opt/follow.email/.env', 'Root .env file'),
-            (f'{self.ssh_user}@{self.ip_address}:/opt/follow.email/infra/.env', 'Infra .env file (for docker-compose)'),
-        ]
+        print(f"{Colors.OKBLUE}Reading prod.env and updating BASE_URL...{Colors.ENDC}")
+        print(f"  Protocol: {protocol}")
+        print(f"  Domain: {domain}")
+        print(f"  BASE_URL: {base_url}")
         
-        for remote_path, description in scp_commands:
-            scp_command = [
-                'scp',
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'UserKnownHostsFile=/dev/null',
-                '-i', self.ssh_key_path,
-                local_env_path,
-                remote_path
+        # Read the env file and update BASE_URL
+        try:
+            with open(local_env_path, 'r') as f:
+                env_content = f.read()
+            
+            # Update or add BASE_URL
+            import re
+            if re.search(r'^BASE_URL=.*$', env_content, re.MULTILINE):
+                # Replace existing BASE_URL
+                env_content = re.sub(
+                    r'^BASE_URL=.*$',
+                    f'BASE_URL={base_url}',
+                    env_content,
+                    flags=re.MULTILINE
+                )
+            else:
+                # Add BASE_URL at the end
+                env_content += f"\nBASE_URL={base_url}\n"
+            
+            # Write to a temporary file for upload
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as tmp_file:
+                tmp_file.write(env_content)
+                tmp_env_path = tmp_file.name
+            
+        except Exception as e:
+            print(f"{Colors.FAIL}Failed to process env file: {e}{Colors.ENDC}")
+            return False
+        
+        print(f"{Colors.OKBLUE}Copying updated env file to server...{Colors.ENDC}")
+        
+        try:
+            # Use scp to copy the .env file to root of the app directory AND infra directory
+            scp_commands = [
+                (f'{self.ssh_user}@{self.ip_address}:/opt/follow.email/.env', 'Root .env file'),
+                (f'{self.ssh_user}@{self.ip_address}:/opt/follow.email/infra/.env', 'Infra .env file (for docker-compose)'),
             ]
             
+            for remote_path, description in scp_commands:
+                scp_command = [
+                    'scp',
+                    '-o', 'StrictHostKeyChecking=no',
+                    '-o', 'UserKnownHostsFile=/dev/null',
+                    '-i', self.ssh_key_path,
+                    tmp_env_path,
+                    remote_path
+                ]
+                
+                try:
+                    result = subprocess.run(scp_command, capture_output=True, timeout=60)
+                    if result.returncode != 0:
+                        print(f"{Colors.WARNING}Failed to copy .env to {description}{Colors.ENDC}")
+                        print(f"  Error: {result.stderr.decode() if result.stderr else 'Unknown error'}")
+                    else:
+                        print(f"{Colors.OKGREEN}[OK] {description} copied successfully{Colors.ENDC}")
+                except Exception as e:
+                    print(f"{Colors.WARNING}Failed to copy .env to {description}: {e}{Colors.ENDC}")
+        finally:
+            # Clean up temp file
             try:
-                result = subprocess.run(scp_command, capture_output=True, timeout=60)
-                if result.returncode != 0:
-                    print(f"{Colors.WARNING}Failed to copy .env to {description}{Colors.ENDC}")
-                    print(f"  Error: {result.stderr.decode() if result.stderr else 'Unknown error'}")
-                else:
-                    print(f"{Colors.OKGREEN}[OK] {description} copied successfully{Colors.ENDC}")
-            except Exception as e:
-                print(f"{Colors.WARNING}Failed to copy .env to {description}: {e}{Colors.ENDC}")
+                os.unlink(tmp_env_path)
+            except:
+                pass
         
-        print(f"\n{Colors.OKGREEN}[OK] Environment variables configured!{Colors.ENDC}\n")
+        print(f"\n{Colors.OKGREEN}[OK] Environment variables configured!{Colors.ENDC}")
+        print(f"  BASE_URL set to: {base_url}\n")
         return True
     
     def deploy_application(self, github_repo: Optional[str] = None) -> bool:
-        """Deploy the application"""
+        """Deploy the application with retry logic"""
         print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
         print(f"{Colors.HEADER}Deploying Application{Colors.ENDC}")
         print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
@@ -812,65 +1106,183 @@ class InstanceProvisioner:
             github_repo = os.getenv('GITHUB_REPO', 'https://github.com/followdotemail/follow.email.git')
         
         commands = [
-            ("Creating app directory",
-             "sudo mkdir -p /opt/follow.email && sudo chown $USER:$USER /opt/follow.email"),
-            
-            ("Cloning repository",
-             f"git clone {github_repo} /opt/follow.email || (cd /opt/follow.email && git pull)"),
+            CommandConfig(
+                description="Creating app directory",
+                command="sudo mkdir -p /opt/follow.email && sudo chown $USER:$USER /opt/follow.email",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=3,
+                show_output=True
+            ),
+            CommandConfig(
+                description="Cloning repository",
+                command=f"[ -d /opt/follow.email/.git ] && (cd /opt/follow.email && git fetch --all && git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)) || git clone {github_repo} /opt/follow.email",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=600,
+                max_retries=3,
+                show_output=True,
+                check_running=True
+            ),
         ]
         
-        for description, command in commands:
-            print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
-            if not self.run_ssh_command(command, show_output=True):
-                print(f"{Colors.WARNING}Note: {description} - check if already exists{Colors.ENDC}")
+        success, _ = self.run_commands_batch(commands)
         
-        print(f"\n{Colors.OKGREEN}[OK] Application deployment base setup complete!{Colors.ENDC}")
+        if success:
+            print(f"\n{Colors.OKGREEN}[OK] Application deployment base setup complete!{Colors.ENDC}")
+        else:
+            print(f"\n{Colors.FAIL}[ERROR] Application deployment failed{Colors.ENDC}")
         
-        return True
+        return success
     
     def start_application(self) -> bool:
-        """Start the application using docker-compose"""
+        """Start the application using docker-compose with retry logic"""
         print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
         print(f"{Colors.HEADER}Starting Application{Colors.ENDC}")
         print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
         
         commands = [
-            ("Building Docker image",
-             "cd /opt/follow.email/infra && sudo docker compose build backend"),
-            
-            ("Starting application",
-             "cd /opt/follow.email/infra && sudo docker compose up -d backend"),
-            
-            ("Waiting for app to be healthy",
-             "sleep 60"),
+            CommandConfig(
+                description="Building Docker image",
+                command="cd /opt/follow.email/infra && sudo docker compose build backend",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=900,  # Docker builds can take a while
+                max_retries=2,
+                show_output=True,
+                check_running=True
+            ),
+            CommandConfig(
+                description="Starting application",
+                command="cd /opt/follow.email/infra && sudo docker compose up -d backend",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=300,
+                max_retries=3,
+                show_output=True
+            ),
+            CommandConfig(
+                description="Waiting for app to be healthy",
+                command="sleep 60",
+                criticality=CommandCriticality.OPTIONAL,
+                timeout=120,
+                show_output=False
+            ),
         ]
         
-        for description, command in commands:
-            print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
-            if not self.run_ssh_command(command, show_output=True, timeout=600):
-                print(f"{Colors.FAIL}[ERROR] Failed: {description}{Colors.ENDC}")
-                return False
-            print(f"{Colors.OKGREEN}[OK] {description} completed{Colors.ENDC}")
+        success, _ = self.run_commands_batch(commands)
         
-        # Check container status
+        if not success:
+            print(f"{Colors.FAIL}[ERROR] Failed to start application{Colors.ENDC}")
+            return False
+        
+        # Check container status (optional verification)
         print(f"\n{Colors.OKBLUE}Checking container status...{Colors.ENDC}")
-        status_check = "cd /opt/follow.email/infra && sudo docker compose ps backend"
-        self.run_ssh_command(status_check, show_output=True, timeout=100)
+        status_config = CommandConfig(
+            description="Container status check",
+            command="cd /opt/follow.email/infra && sudo docker compose ps backend",
+            criticality=CommandCriticality.OPTIONAL,
+            timeout=60,
+            show_output=True
+        )
+        self.run_command_with_retry(status_config)
         
-        # Check if the app is responding
+        # Check if the app is responding (optional health check)
         print(f"\n{Colors.OKBLUE}Checking application health...{Colors.ENDC}")
-        health_check = "curl -f http://localhost:8080/api/v1/health || echo 'Health check failed'"
-        if self.run_ssh_command(health_check, show_output=True, timeout=100):
+        health_config = CommandConfig(
+            description="Application health check",
+            command="curl -sf http://localhost:8080/api/v1/health",
+            criticality=CommandCriticality.OPTIONAL,
+            timeout=30,
+            max_retries=3,
+            initial_delay=10.0,
+            show_output=True
+        )
+        health_result = self.run_command_with_retry(health_config)
+        
+        if health_result.success:
             print(f"{Colors.OKGREEN}[OK] Application is running and healthy!{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Health check failed{Colors.ENDC}")
             print(f"{Colors.OKBLUE}Checking container logs...{Colors.ENDC}")
-            logs_check = "cd /opt/follow.email/infra && sudo docker compose logs --tail=50 backend"
-            self.run_ssh_command(logs_check, show_output=True, timeout=300)
+            logs_config = CommandConfig(
+                description="Container logs",
+                command="cd /opt/follow.email/infra && sudo docker compose logs --tail=50 backend",
+                criticality=CommandCriticality.OPTIONAL,
+                timeout=120,
+                show_output=True
+            )
+            self.run_command_with_retry(logs_config)
             print(f"{Colors.WARNING}Please check the logs above for errors{Colors.ENDC}")
         
         print(f"\n{Colors.OKGREEN}[OK] Application started successfully!{Colors.ENDC}\n")
         return True
+
+    def get_ssl_cert_dir(self, domain: str) -> str:
+        """
+        Get the local SSL certificate directory for a domain.
+        Directory structure: apps/hermes/deployments/ssl_certs/<domain>/
+        """
+        base_ssl_dir = os.path.join(os.path.dirname(__file__), 'ssl_certs')
+        return os.path.join(base_ssl_dir, domain)
+
+    def download_ssl_certificates(self, record_name: str) -> bool:
+        """
+        Download SSL certificates from the server to local ssl_certs/<domain>/ directory.
+        This preserves certificates for reuse when recreating instances.
+        """
+        domain = f"{record_name}.follow.email"
+        local_cert_dir = self.get_ssl_cert_dir(domain)
+        
+        print(f"\n{Colors.OKBLUE}Downloading SSL certificates for {domain}...{Colors.ENDC}")
+        
+        # Create local directory structure
+        os.makedirs(local_cert_dir, exist_ok=True)
+        
+        # Certificate files to download
+        cert_files = ['fullchain.pem', 'privkey.pem', 'chain.pem', 'cert.pem']
+        remote_cert_dir = f"/etc/letsencrypt/live/{domain}"
+        
+        downloaded = 0
+        for cert_file in cert_files:
+            remote_path = f"{remote_cert_dir}/{cert_file}"
+            local_path = os.path.join(local_cert_dir, cert_file)
+            
+            # First, copy to a readable location on server (letsencrypt files need sudo)
+            temp_remote = f"/tmp/{cert_file}"
+            copy_cmd = f"sudo cp {remote_path} {temp_remote} && sudo chmod 644 {temp_remote}"
+            
+            if not self.run_ssh_command(copy_cmd, show_output=False, timeout=60):
+                if cert_file in ['fullchain.pem', 'privkey.pem']:
+                    print(f"{Colors.WARNING}Failed to copy {cert_file} (required){Colors.ENDC}")
+                continue
+            
+            # Download via SCP
+            scp_command = [
+                'scp',
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                '-i', self.ssh_key_path,
+                f'{self.ssh_user}@{self.ip_address}:{temp_remote}',
+                local_path
+            ]
+            
+            try:
+                result = subprocess.run(scp_command, capture_output=True, timeout=60)
+                if result.returncode == 0:
+                    print(f"  {Colors.OKGREEN}[OK] Downloaded {cert_file}{Colors.ENDC}")
+                    downloaded += 1
+                else:
+                    print(f"  {Colors.WARNING}Failed to download {cert_file}{Colors.ENDC}")
+            except Exception as e:
+                print(f"  {Colors.WARNING}Error downloading {cert_file}: {e}{Colors.ENDC}")
+            finally:
+                # Clean up temp file on server
+                self.run_ssh_command(f"sudo rm -f {temp_remote}", show_output=False, timeout=30)
+        
+        if downloaded >= 2:  # At least fullchain.pem and privkey.pem
+            print(f"\n{Colors.OKGREEN}[OK] SSL certificates saved to {local_cert_dir}{Colors.ENDC}")
+            return True
+        else:
+            print(f"\n{Colors.WARNING}Warning: Could not download all required certificates{Colors.ENDC}")
+            return False
 
     def setup_ssl_certificate(self, record_name: str) -> bool:
         """SSL certificate installation using Let's Encrypt Certbot"""
@@ -881,32 +1293,34 @@ class InstanceProvisioner:
         domain = f"{record_name}.follow.email"
 
         commands = [
-            ("Installing certbot", "sudo apt-get install -y certbot python3-certbot-nginx"),
-            ("Obtaining SSL certificate", f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos --email admin@follow.email --redirect"),
+            CommandConfig(
+                description="Installing certbot",
+                command="sudo apt-get install -y certbot python3-certbot-nginx",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=300,
+                max_retries=3,
+                show_output=False,
+                check_running=True
+            ),
+            CommandConfig(
+                description="Obtaining SSL certificate",
+                command=f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos --email admin@follow.email --redirect",
+                criticality=CommandCriticality.IMPORTANT,
+                timeout=120,
+                max_retries=2,
+                show_output=True
+            ),
         ]
 
-        for description, command in commands:
-            print(f"{Colors.OKBLUE}{description}...{Colors.ENDC}")
-            if 'installing' in description.lower():
-                timeout = 300
-                show_cmd_output = False
-            else:
-                timeout = 120
-                show_cmd_output = True
-
-            if not self.run_ssh_command(command, show_output=show_cmd_output, timeout=timeout):
-                # If certbot fails, it might be because DNS hasn't propagated yet
-                if 'obtaining ssl certificate' in description.lower():
-                    print(f"{Colors.WARNING}Warning: SSL certificate installation failed{Colors.ENDC}")
-                    print(f"{Colors.WARNING}This might be because DNS hasn't propagated yet.{Colors.ENDC}")
-                    print(f"{Colors.WARNING}You can run this manually later: sudo certbot --nginx -d {domain}{Colors.ENDC}")
-                    print(f"{Colors.WARNING}Make sure port 80 is accessible and DNS points to this server.{Colors.ENDC}")
-                    return False
-                else:
-                     print(f"{Colors.FAIL}[ERROR] Failed: {description}{Colors.ENDC}")
-                     return False
-                
-            print(f"{Colors.OKGREEN}[OK] {description} completed{Colors.ENDC}")
+        success, results = self.run_commands_batch(commands)
+        
+        if not success or (len(results) > 1 and not results[1].success):
+            # If certbot fails, it might be because DNS hasn't propagated yet or rate limit
+            print(f"{Colors.WARNING}Warning: SSL certificate installation failed{Colors.ENDC}")
+            print(f"{Colors.WARNING}This might be because DNS hasn't propagated yet or rate limits.{Colors.ENDC}")
+            print(f"{Colors.WARNING}You can run this manually later: sudo certbot --nginx -d {domain}{Colors.ENDC}")
+            print(f"{Colors.WARNING}Make sure port 80 is accessible and DNS points to this server.{Colors.ENDC}")
+            return False
         
         # Verify certificate was installed successfully
         print(f"\n{Colors.OKBLUE}Verifying SSL certificate...{Colors.ENDC}")
@@ -914,29 +1328,53 @@ class InstanceProvisioner:
         cert_check = f"sudo certbot certificates | grep -A2 '{domain}' || echo 'Certificate not found!'"
         self.run_ssh_command(cert_check, show_output=True, timeout=300)
 
-        # Test auto renewal
+        # Test auto renewal (optional)
         print(f"\n{Colors.OKBLUE}Testing certificate auto-renewal...{Colors.ENDC}")
-        renewal_test = f"sudo certbot renew --dry-run"
-        if self.run_ssh_command(renewal_test, show_output=True, timeout=100):
+        renewal_config = CommandConfig(
+            description="Testing auto-renewal",
+            command="sudo certbot renew --dry-run",
+            criticality=CommandCriticality.OPTIONAL,
+            timeout=100,
+            show_output=True
+        )
+        renewal_result = self.run_command_with_retry(renewal_config)
+        if renewal_result.success:
             print(f"{Colors.OKGREEN}[OK] Auto-renewal test passed{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Auto-renewal test failed, but certificate is installed{Colors.ENDC}")
 
-        # Verify nginx config with SSL
+        # Verify nginx config with SSL (important but not critical)
         print(f"\n{Colors.OKBLUE}Verifying nginx SSL configuration...{Colors.ENDC}")
-        nginx_test = "sudo nginx -t < /dev/null 2>&1"
-        if self.run_ssh_command(nginx_test, show_output=True, timeout=100):
+        nginx_config = CommandConfig(
+            description="Nginx config test",
+            command="sudo nginx -t < /dev/null 2>&1",
+            criticality=CommandCriticality.IMPORTANT,
+            timeout=100,
+            show_output=True
+        )
+        if self.run_command_with_retry(nginx_config).success:
             print(f"{Colors.OKGREEN}[OK] Nginx SSL configuration is valid{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Nginx configuration test failed{Colors.ENDC}")
         
         # Reload nginx to apply SSL config
         print(f"\n{Colors.OKBLUE}Reloading nginx to apply SSL configuration...{Colors.ENDC}")
-        reload_cmd = "sudo systemctl reload nginx && sleep 2 && sudo systemctl is-active --quiet nginx && echo 'Nginx is active' && sudo systemctl status nginx"
-        if self.run_ssh_command(reload_cmd, show_output=True, timeout=100):
+        reload_config = CommandConfig(
+            description="Nginx reload",
+            command="sudo systemctl reload nginx && sleep 2 && sudo systemctl is-active --quiet nginx && echo 'Nginx is active'",
+            criticality=CommandCriticality.IMPORTANT,
+            timeout=100,
+            max_retries=2,
+            show_output=True
+        )
+        if self.run_command_with_retry(reload_config).success:
             print(f"{Colors.OKGREEN}[OK] Nginx reloaded successfully{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: Nginx reload failed, but continuing...{Colors.ENDC}")
+        
+        # Download certificates to local directory for future use
+        print(f"\n{Colors.OKBLUE}Saving SSL certificates locally for future use...{Colors.ENDC}")
+        self.download_ssl_certificates(record_name)
         
         print(f"\n{Colors.OKGREEN}[OK] SSL certificate installed successfully!{Colors.ENDC}\n")
         print(f"{Colors.WARNING}IMPORTANT: Make sure your Excloud security group allows HTTPS (port 443) traffic!{Colors.ENDC}")
@@ -944,14 +1382,17 @@ class InstanceProvisioner:
         return True
 
 
-    def install_existing_ssl_certificate(self, local_cert_path: str, record_name: str) -> bool:
-        """Install existing SSL certificate instead of obtaining a new one"""
+    def install_existing_ssl_certificate(self, record_name: str) -> bool:
+        """
+        Install existing SSL certificate from local ssl_certs/<domain>/ directory.
+        Directory structure: ssl_certs/<domain>/fullchain.pem, privkey.pem, etc.
+        """
+        domain = f"{record_name}.follow.email"
+        local_cert_path = self.get_ssl_cert_dir(domain)
 
         print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
-        print(f"{Colors.HEADER}Installing Existing SSL Certificate{Colors.ENDC}")
+        print(f"{Colors.HEADER}Installing Existing SSL Certificate for {domain}{Colors.ENDC}")
         print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
-
-        domain = f"{record_name}.follow.email"
 
         local_fullchain = os.path.join(local_cert_path, 'fullchain.pem')
         local_privkey = os.path.join(local_cert_path, 'privkey.pem')
@@ -959,25 +1400,34 @@ class InstanceProvisioner:
         local_cert = os.path.join(local_cert_path, 'cert.pem')
 
         required_files = [local_fullchain, local_privkey]
-        optional_files = [local_chain, local_cert]
+
+        # Check if certificate directory exists and has required files
+        if not os.path.exists(local_cert_path):
+            print(f"{Colors.WARNING}Certificate directory not found: {local_cert_path}{Colors.ENDC}")
+            return False
 
         for file_path in required_files:
             if not os.path.exists(file_path):
                 print(f"{Colors.FAIL}Required certificate file not found: {file_path}{Colors.ENDC}")
                 return False
 
-        print(f"{Colors.OKBLUE}Found existing SSL certificates, uploading to server...{Colors.ENDC}")
+        print(f"{Colors.OKBLUE}Found existing SSL certificates at {local_cert_path}, uploading to server...{Colors.ENDC}")
         
-        # Create letsencrypt directory structure on server
-        commands = [
-            f"sudo mkdir -p /etc/letsencrypt/live/{domain}",
-            f"sudo mkdir -p /etc/letsencrypt/archive/{domain}",
+        # Create letsencrypt directory structure on server using retry logic
+        dir_commands = [
+            CommandConfig(
+                description="Creating certificate directories",
+                command=f"sudo mkdir -p /etc/letsencrypt/live/{domain} && sudo mkdir -p /etc/letsencrypt/archive/{domain}",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=3
+            )
         ]
-
-        for cmd in commands:
-            if not self.run_ssh_command(cmd, show_output=False, timeout=100):
-                print(f"{Colors.FAIL}Failed to create certificate directories{Colors.ENDC}")
-                return False
+        
+        success, _ = self.run_commands_batch(dir_commands)
+        if not success:
+            print(f"{Colors.FAIL}Failed to create certificate directories{Colors.ENDC}")
+            return False
 
         # Upload certificate files via SCP
         cert_files = [
@@ -992,98 +1442,117 @@ class InstanceProvisioner:
             cert_files.append((local_cert, '/tmp/cert.pem', f'/etc/letsencrypt/live/{domain}/cert.pem'))
 
         for local_file, remote_tmp, remote_final in cert_files:
-            # Upload to /tmp first
-            scp_command = [
-                'scp',
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'UserKnownHostsFile=/dev/null',
-                '-i', self.ssh_key_path,
-                local_file,
-                f'{self.ssh_user}@{self.ip_address}:{remote_tmp}'
-            ]
-
-            try:
-                result = subprocess.run(scp_command, capture_output=True, timeout=100)
-                if result.returncode != 0:
-                    print(f"{Colors.FAIL}Failed to upload {os.path.basename(local_file)}{Colors.ENDC}")
-                    return False
-                
-                # Move to proper location with correct permissions
-                move_cmd = f"sudo mv {remote_tmp} {remote_final}"
-                if not self.run_ssh_command(move_cmd, show_output=False, timeout=100):
-                    print(f"{Colors.FAIL}Failed to move {os.path.basename(local_file)} to final location{Colors.ENDC}")
-                    return False
-                
-                print(f"{Colors.OKGREEN}[OK] Uploaded {os.path.basename(local_file)}{Colors.ENDC}")
-                
-            except Exception as e:
-                print(f"{Colors.FAIL}Failed to upload certificate file: {e}{Colors.ENDC}")
+            # Upload to /tmp first with retry
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    scp_command = [
+                        'scp',
+                        '-o', 'StrictHostKeyChecking=no',
+                        '-o', 'UserKnownHostsFile=/dev/null',
+                        '-i', self.ssh_key_path,
+                        local_file,
+                        f'{self.ssh_user}@{self.ip_address}:{remote_tmp}'
+                    ]
+                    
+                    result = subprocess.run(scp_command, capture_output=True, timeout=100)
+                    if result.returncode == 0:
+                        break
+                    
+                    if attempt < max_retries - 1:
+                        print(f"{Colors.WARNING}Retry {attempt + 2}/{max_retries} for {os.path.basename(local_file)}...{Colors.ENDC}")
+                        time.sleep(5 * (attempt + 1))
+                except subprocess.TimeoutExpired:
+                    if attempt < max_retries - 1:
+                        print(f"{Colors.WARNING}Timeout, retrying {os.path.basename(local_file)}...{Colors.ENDC}")
+                        time.sleep(5 * (attempt + 1))
+                    continue
+            else:
+                print(f"{Colors.FAIL}Failed to upload {os.path.basename(local_file)} after {max_retries} attempts{Colors.ENDC}")
                 return False
+            
+            # Move to proper location with correct permissions
+            move_config = CommandConfig(
+                description=f"Moving {os.path.basename(local_file)}",
+                command=f"sudo mv {remote_tmp} {remote_final}",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=2
+            )
+            if not self.run_command_with_retry(move_config).success:
+                print(f"{Colors.FAIL}Failed to move {os.path.basename(local_file)} to final location{Colors.ENDC}")
+                return False
+            
+            print(f"{Colors.OKGREEN}[OK] Uploaded {os.path.basename(local_file)}{Colors.ENDC}")
 
-        # Set correct permissions
+        # Set correct permissions (optional - don't fail if these don't work)
         permission_commands = [
-            f"sudo chmod 644 /etc/letsencrypt/live/{domain}/fullchain.pem",
-            f"sudo chmod 600 /etc/letsencrypt/live/{domain}/privkey.pem",
-            f"sudo chown root:root /etc/letsencrypt/live/{domain}/*.pem",
+            CommandConfig(
+                description="Setting certificate permissions",
+                command=f"sudo chmod 644 /etc/letsencrypt/live/{domain}/fullchain.pem && "
+                        f"sudo chmod 600 /etc/letsencrypt/live/{domain}/privkey.pem && "
+                        f"sudo chown -R root:root /etc/letsencrypt/live/{domain}/",
+                criticality=CommandCriticality.IMPORTANT,
+                timeout=60,
+                max_retries=2
+            )
         ]
-
-        for cmd in permission_commands:
-            self.run_ssh_command(cmd, show_output=False, timeout=100)
+        self.run_commands_batch(permission_commands)
         
         # Update nginx configuration to use SSL
         print(f"\n{Colors.OKBLUE}Updating nginx configuration for SSL...{Colors.ENDC}")
         
         nginx_ssl_config = f"""server {{
-            listen 80;
-            server_name {domain};
-            
-            # Redirect HTTP to HTTPS
-            return 301 https://$server_name$request_uri;
-        }}
+    listen 80;
+    server_name {domain};
+    
+    # Redirect HTTP to HTTPS
+    return 301 https://$server_name$request_uri;
+}}
 
-        server {{
-            listen 443 ssl http2;
-            server_name {domain};
+server {{
+    listen 443 ssl http2;
+    server_name {domain};
 
-            # SSL Configuration
-            ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
-            ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
-            
-            # SSL Settings
-            ssl_protocols TLSv1.2 TLSv1.3;
-            ssl_prefer_server_ciphers on;
-            ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    # SSL Configuration
+    ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
+    
+    # SSL Settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
 
-            # Security headers
-            add_header X-Frame-Options "SAMEORIGIN" always;
-            add_header X-Content-Type-Options "nosniff" always;
-            add_header X-XSS-Protection "1; mode=block" always;
-            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-            # Proxy settings
-            location / {{
-                proxy_pass http://localhost:8080;
-                proxy_http_version 1.1;
-                proxy_set_header Upgrade $http_upgrade;
-                proxy_set_header Connection 'upgrade';
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
-                proxy_cache_bypass $http_upgrade;
-                
-                # Timeouts
-                proxy_connect_timeout 60s;
-                proxy_send_timeout 60s;
-                proxy_read_timeout 60s;
-            }}
+    # Proxy settings
+    location / {{
+        proxy_pass http://localhost:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        # Timeouts
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }}
 
-            # Health check endpoint
-            location /api/v1/health {{
-                proxy_pass http://localhost:8080;
-                access_log off;
-            }}
-        }}"""
+    # Health check endpoint
+    location /api/v1/health {{
+        proxy_pass http://localhost:8080;
+        access_log off;
+    }}
+}}"""
         
         # Write and upload nginx config with SSL
         import tempfile
@@ -1092,43 +1561,74 @@ class InstanceProvisioner:
             tmp_config_path = tmp_file.name
         
         try:
-            # Upload config
-            scp_command = [
-                'scp',
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'UserKnownHostsFile=/dev/null',
-                '-i', self.ssh_key_path,
-                tmp_config_path,
-                f'{self.ssh_user}@{self.ip_address}:/tmp/nginx-ssl-config.tmp'
-            ]
-            subprocess.run(scp_command, capture_output=True, timeout=300, check=True)
+            # Upload config with retry
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    scp_command = [
+                        'scp',
+                        '-o', 'StrictHostKeyChecking=no',
+                        '-o', 'UserKnownHostsFile=/dev/null',
+                        '-i', self.ssh_key_path,
+                        tmp_config_path,
+                        f'{self.ssh_user}@{self.ip_address}:/tmp/nginx-ssl-config.tmp'
+                    ]
+                    result = subprocess.run(scp_command, capture_output=True, timeout=300)
+                    if result.returncode == 0:
+                        break
+                    if attempt < max_retries - 1:
+                        time.sleep(5 * (attempt + 1))
+                except subprocess.TimeoutExpired:
+                    if attempt < max_retries - 1:
+                        time.sleep(5 * (attempt + 1))
+                    continue
+            else:
+                print(f"{Colors.FAIL}Failed to upload nginx config after {max_retries} attempts{Colors.ENDC}")
+                return False
             
             # Move to nginx sites-available
-            self.run_ssh_command(
-                "sudo mv -f /tmp/nginx-ssl-config.tmp /etc/nginx/sites-available/follow-email && "
-                "sudo chmod 644 /etc/nginx/sites-available/follow-email",
-                show_output=False, timeout=100
+            move_config = CommandConfig(
+                description="Moving nginx SSL config",
+                command="sudo mv -f /tmp/nginx-ssl-config.tmp /etc/nginx/sites-available/follow-email && "
+                        "sudo chmod 644 /etc/nginx/sites-available/follow-email",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=2
             )
+            self.run_command_with_retry(move_config)
             
         finally:
-            os.unlink(tmp_config_path)
+            try:
+                os.unlink(tmp_config_path)
+            except:
+                pass
         
         # Test and reload nginx
-        print(f"\n{Colors.OKBLUE}Testing nginx configuration...{Colors.ENDC}")
-        try:
-            if not self.run_ssh_command("sudo nginx -t < /dev/null 2>&1", show_output=True, timeout=300):
-                print(f"{Colors.FAIL}Nginx configuration test failed{Colors.ENDC}")
-                return False
-        except Exception as e:
-            print(f"{Colors.FAIL}Failed to test nginx configuration: {e}{Colors.ENDC}")
+        nginx_commands = [
+            CommandConfig(
+                description="Testing nginx configuration",
+                command="sudo nginx -t < /dev/null 2>&1",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=2,
+                show_output=True
+            ),
+            CommandConfig(
+                description="Reloading nginx",
+                command="sudo systemctl reload nginx",
+                criticality=CommandCriticality.CRITICAL,
+                timeout=60,
+                max_retries=2,
+                show_output=True
+            )
+        ]
+        
+        success, _ = self.run_commands_batch(nginx_commands)
+        if not success:
+            print(f"{Colors.FAIL}Failed to configure nginx with SSL{Colors.ENDC}")
             return False
         
-        print(f"{Colors.OKBLUE}Reloading nginx...{Colors.ENDC}")
-        if not self.run_ssh_command("sudo systemctl reload nginx", show_output=True, timeout=300):
-            print(f"{Colors.FAIL}Failed to reload nginx{Colors.ENDC}")
-            return False
-        
-        print(f"\n{Colors.OKGREEN}[OK] SSL certificate installed successfully!{Colors.ENDC}\n")
+        print(f"\n{Colors.OKGREEN}[OK] SSL certificate installed successfully from local cache!{Colors.ENDC}\n")
         return True
             
 
@@ -1224,7 +1724,7 @@ def main():
     
     try:
         if args.action == 'create':
-            discord.info(title="Follow.Email backend instance provisioning started", description=f"Started provisioning for **https://{args.record_name}.follow.email**")
+            discord.info(title="Follow.Email backend instance provisioning started", description=f"Started provisioning for **{args.record_name}.follow.email**")
             print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
             print(f"{Colors.HEADER}Follow.Email Backend Instance Provisioning{Colors.ENDC}")
             print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
@@ -1299,48 +1799,63 @@ def main():
                 print(f"{Colors.FAIL}Failed to setup nginx{Colors.ENDC}")
                 sys.exit(1)
 
-            ssl_cert_dir = os.path.join(os.path.dirname(__file__), 'ssl_certs')
-            if os.path.exists(ssl_cert_dir):
-                print(f"{Colors.OKBLUE}Found existing SSL certificates, will reuse them...{Colors.ENDC}")
-                if not provisioner.install_existing_ssl_certificate(ssl_cert_dir, record_name):
+            # Check for existing SSL certificates in domain-specific directory
+            # Directory structure: ssl_certs/<domain>/fullchain.pem, privkey.pem, etc.
+            domain = f"{record_name}.follow.email"
+            ssl_cert_dir = provisioner.get_ssl_cert_dir(domain)
+            ssl_fullchain = os.path.join(ssl_cert_dir, 'fullchain.pem')
+            ssl_privkey = os.path.join(ssl_cert_dir, 'privkey.pem')
+            
+            # Track SSL installation success
+            ssl_success = False
+            
+            if os.path.exists(ssl_fullchain) and os.path.exists(ssl_privkey):
+                print(f"{Colors.OKBLUE}Found existing SSL certificates for {domain}, will reuse them...{Colors.ENDC}")
+                ssl_success = provisioner.install_existing_ssl_certificate(record_name)
+                if not ssl_success:
                     print(f"{Colors.WARNING}Warning: Failed to install existing SSL certificate{Colors.ENDC}")
                     print(f"{Colors.WARNING}Falling back to obtaining new certificate...{Colors.ENDC}")
-
-                    if not provisioner.setup_ssl_certificate(record_name):
+                    ssl_success = provisioner.setup_ssl_certificate(record_name)
+                    if not ssl_success:
                         print(f"{Colors.WARNING}Warning: SSL certificate installation failed or skipped{Colors.ENDC}")
                         print(f"{Colors.WARNING}You can install it manually later when DNS has propagated{Colors.ENDC}")
             else:
-                # No existing certificates, obtain new ones
-                if not provisioner.setup_ssl_certificate(record_name):
+                print(f"{Colors.OKBLUE}No existing SSL certificates found for {domain}{Colors.ENDC}")
+                print(f"{Colors.OKBLUE}Will obtain new certificate from Let's Encrypt...{Colors.ENDC}")
+                # No existing certificates for this domain, obtain new ones
+                ssl_success = provisioner.setup_ssl_certificate(record_name)
+                if not ssl_success:
                     print(f"{Colors.WARNING}Warning: SSL certificate installation failed or skipped{Colors.ENDC}")
                     print(f"{Colors.WARNING}You can install it manually later when DNS has propagated{Colors.ENDC}")
 
-
+            # Determine protocol based on SSL success
+            protocol = "https" if ssl_success else "http"
+            api_url = f"{protocol}://{record_name}.follow.email"
 
             if not provisioner.deploy_application(args.github_repo):
                 print(f"{Colors.FAIL}Failed to deploy application{Colors.ENDC}")
                 sys.exit(1)
             
-            # Step 5: Setup environment variables
+            # Step 5: Setup environment variables with correct BASE_URL
             print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
             print(f"{Colors.HEADER}Step 5: Setting Up Environment{Colors.ENDC}")
             print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
             
-            provisioner.setup_env_file()
+            provisioner.setup_env_file(record_name=record_name, ssl_success=ssl_success)
             
             # Step 6: Start the application
             if not provisioner.start_application():
                 print(f"{Colors.WARNING}Warning: Failed to start application automatically{Colors.ENDC}")
                 print(f"{Colors.WARNING}You can start it manually after provisioning{Colors.ENDC}")
             
-            success_msg = f"Follow.Email Backend is now running on **{record_name}.follow.email**"
+            success_msg = f"Follow.Email Backend is now running on **{api_url}**"
             discord.success(
                 title="Follow.Email backend instance provisioning complete",
                 description=success_msg,
                 fields=[
                     {
                         "name": "Application URL",
-                        "value":  f"https://{args.record_name}.follow.email",
+                        "value":  api_url,
                         "inline": True
                     },
                     {
@@ -1353,7 +1868,11 @@ def main():
                         "value": f"**{vm_id}**",
                         "inline": True
                     },
-                    
+                    {
+                        "name": "SSL Status",
+                        "value": "✅ Enabled" if ssl_success else "❌ Not configured",
+                        "inline": True
+                    },
                 ],
             )
             
@@ -1366,12 +1885,13 @@ def main():
             print(f"  VM ID:       {vm_id}")
             print(f"  IP Address:  {instance_ip}")
             print(f"  SSH Access:  ssh -i {args.ssh_key} ubuntu@{instance_ip}")
-            print(f"  API URL:     http://{record_name}.follow.email")
+            print(f"  API URL:     {api_url}")
+            print(f"  SSL Status:  {'Enabled' if ssl_success else 'Not configured (HTTP only)'}")
             print(f"\n{Colors.BOLD}Quick Commands:{Colors.ENDC}")
             print(f"  Check status: ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose ps'")
             print(f"  View logs:    ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose logs -f backend'")
             print(f"  Restart app:  ssh -i {args.ssh_key} ubuntu@{instance_ip} 'cd /opt/follow.email/infra && sudo docker compose restart backend'")
-            print(f"  Test API:     curl https://{record_name}.follow.email/api/v1/health")
+            print(f"  Test API:     curl {api_url}/api/v1/health")
             print(f"\n{Colors.OKGREEN}[OK] {success_msg}{Colors.ENDC}\n")
         
         elif args.action == 'destroy':
@@ -1406,16 +1926,33 @@ def main():
             
             provisioner.install_dependencies()
             provisioner.setup_nginx(record_name)
-            ssl_cert_dir = os.path.join(os.path.dirname(__file__), 'ssl_certs')
-            if os.path.exists(ssl_cert_dir) and os.path.exists(os.path.join(ssl_cert_dir, 'fullchain.pem')):
-                provisioner.install_existing_ssl_certificate(ssl_cert_dir, record_name)
+            
+            # Check for existing SSL certificates in domain-specific directory
+            domain = f"{record_name}.follow.email"
+            ssl_cert_dir = provisioner.get_ssl_cert_dir(domain)
+            ssl_fullchain = os.path.join(ssl_cert_dir, 'fullchain.pem')
+            ssl_privkey = os.path.join(ssl_cert_dir, 'privkey.pem')
+            
+            # Track SSL success
+            ssl_success = False
+            
+            if os.path.exists(ssl_fullchain) and os.path.exists(ssl_privkey):
+                print(f"{Colors.OKBLUE}Found existing SSL certificates for {domain}{Colors.ENDC}")
+                ssl_success = provisioner.install_existing_ssl_certificate(record_name)
             else:
-                provisioner.setup_ssl_certificate(record_name)
+                print(f"{Colors.OKBLUE}No existing SSL certificates for {domain}, obtaining new ones...{Colors.ENDC}")
+                ssl_success = provisioner.setup_ssl_certificate(record_name)
+            
             provisioner.deploy_application(args.github_repo)
-            provisioner.setup_env_file()
+            provisioner.setup_env_file(record_name=record_name, ssl_success=ssl_success)
             provisioner.start_application()
             
-            print(f"\n{Colors.OKGREEN}[OK] Setup complete! Application running at http://{record_name}.follow.email{Colors.ENDC}\n")
+            # Determine protocol based on SSL success
+            protocol = "https" if ssl_success else "http"
+            api_url = f"{protocol}://{record_name}.follow.email"
+            
+            print(f"\n{Colors.OKGREEN}[OK] Setup complete! Application running at {api_url}{Colors.ENDC}")
+            print(f"  SSL Status: {'Enabled' if ssl_success else 'Not configured (HTTP only)'}\n")
     
     except KeyboardInterrupt:
         print(f"\n{Colors.WARNING}Interrupted by user{Colors.ENDC}")

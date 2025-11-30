@@ -31,6 +31,7 @@
 //	     description: Bearer token for authentication
 //
 // swagger:meta
+
 package main
 
 import (
@@ -48,6 +49,7 @@ import (
 	"follow-email-backend/internal/routes"
 	"follow-email-backend/internal/services"
 	"follow-email-backend/pkg/ai"
+	"follow-email-backend/pkg/debug"
 	"follow-email-backend/pkg/encryption"
 	"follow-email-backend/pkg/oauth"
 	"follow-email-backend/pkg/storage"
@@ -72,6 +74,11 @@ func main() {
 
 	// Load configuration
 	cfg := config.Load()
+
+	// Initialize debug logging to file
+	debug.SetLogsDirectory("logs")
+	defer debug.CloseLogFile()
+	log.Println("Debug logging initialized - logs will be saved to logs/ directory")
 
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {
@@ -160,9 +167,13 @@ func main() {
 	// Initialize privacy service
 	privacyService := services.NewPrivacyService(db, storageService)
 
+	// Initialize label service
+	labelService := services.NewLabelService(db, gmailOAuthService, gmailTokenService)
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(cfg, db)
 	emailHandler := handlers.NewEmailHandler(db, emailSyncService, aiService, qstashService, storageService, gmailTokenService, gmailSyncService)
+	labelHandler := handlers.NewLabelHandler(db, labelService) 
 	privacyHandler := handlers.NewPrivacyHandler(privacyService)
 	gmailConsentHandler := handlers.NewGmailConsentHandler(cfg, db, gmailOAuthService, qstashService)
 	webhookHandler := handlers.NewWebhookHandler(cfg, db, emailSyncService, aiService, gmailSyncService)
@@ -182,7 +193,7 @@ func main() {
 	// Gmail routes - callback must be public, others require auth
 	routes.SetupGmailRoutes(protected, public, gmailConsentHandler)
 
-	routes.SetupProtectedRoutes(protected, privacyHandler, gmailConsentHandler, emailHandler)
+	routes.SetupProtectedRoutes(protected, privacyHandler, gmailConsentHandler, emailHandler, labelHandler)
 	routes.SetupProtectedAuthRoutes(protected, authHandler)
 
 	// Serve Swagger UI

@@ -49,8 +49,8 @@ func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) erro
 		return fmt.Errorf("missing Upstash-Signature header")
 	}
 
-	fmt.Printf("DEBUG: Received signature: %s\n", signature)
-	fmt.Printf("DEBUG: Body length: %d bytes\n", len(body))
+	DebugTextPrint(fmt.Sprintf("Received signature: %s", signature))
+	DebugTextPrint(fmt.Sprintf("Body length: %d bytes", len(body)))
 
 	// QStash now sends JWT tokens directly (new format)
 	// Check if it's a JWT (contains two dots)
@@ -80,13 +80,13 @@ func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) erro
 	fmt.Println("DEBUG: Using v1 signature format")
 	parts := strings.Split(signature, "=")
 	if len(parts) != 2 || parts[0] != "v1" {
-		fmt.Printf("DEBUG: Invalid v1 signature format. Got %d parts\n", len(parts))
+		DebugWarningTextPrint(fmt.Sprintf("Invalid v1 signature format. Got %d parts", len(parts)))
 		return fmt.Errorf("invalid signature format")
 	}
 
 	expectedSignature, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
-		fmt.Printf("DEBUG: Failed to decode signature: %v\n", err)
+		DebugErrorTextPrint(fmt.Sprintf("Failed to decode signature: %v", err))
 		return fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
@@ -121,7 +121,7 @@ func (h *WebhookHandler) verifyJWTSignature(token string, signingKey string) boo
 	// Decode the signature from base64 URL encoding
 	expectedSig, err := base64.RawURLEncoding.DecodeString(signature)
 	if err != nil {
-		fmt.Printf("DEBUG: Failed to decode JWT signature: %v\n", err)
+		DebugErrorTextPrint(fmt.Sprintf("Failed to decode JWT signature: %v", err))
 		return false
 	}
 
@@ -178,8 +178,11 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 
 	// Create sync request
 	syncReq := &services.GmailSyncRequest{
-		UserID: userID,
+		UserID:   userID,
+		FullSync: msg.SyncType == "full",
 	}
+
+	DebugTextPrint(fmt.Sprintf("Received SyncType='%s', FullSync=%v", msg.SyncType, syncReq.FullSync))
 
 	// Process email sync using the Gmail sync service
 	fmt.Printf("Processing email sync for user: %s, message: %s\n", msg.UserID, msg.MessageID)

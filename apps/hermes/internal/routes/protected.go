@@ -10,7 +10,13 @@ import (
 )
 
 // SetupProtectedRoutes configures all routes that require authentication
-func SetupProtectedRoutes(router *gin.RouterGroup, privacyHandler *handlers.PrivacyHandler, gmailConsentHandler *handlers.GmailConsentHandler, emailHandler *handlers.EmailHandler) {
+func SetupProtectedRoutes(
+	router *gin.RouterGroup,
+	privacyHandler *handlers.PrivacyHandler,
+	gmailConsentHandler *handlers.GmailConsentHandler,
+	emailHandler *handlers.EmailHandler,
+	labelHandler *handlers.LabelHandler,
+) {
 	// User profile endpoint
 	router.GET("/profile", func(c *gin.Context) {
 		userID, _ := middleware.GetUserID(c)
@@ -44,6 +50,13 @@ func SetupProtectedRoutes(router *gin.RouterGroup, privacyHandler *handlers.Priv
 		ai.POST("/analyze", emailHandler.AnalyzeEmail)
 		ai.POST("/generate-response", emailHandler.GenerateResponse)
 		ai.POST("/:emailId/follow-up", emailHandler.ScheduleFollowUp)
+	}
+
+	// ADD: Label management endpoints
+	labels := router.Group("/labels")
+	{
+		labels.GET("", labelHandler.GetLabels)
+		labels.POST("/sync", labelHandler.SyncLabels)
 	}
 
 	// Setup privacy routes

@@ -55,6 +55,7 @@ func Migrate(db *gorm.DB) error {
 		&models.OAuthToken{},
 		&models.UserPrivacyMetadata{},
 		&models.GmailConsent{},
+		&models.UserLabel{},
 	)
 }
 

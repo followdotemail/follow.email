@@ -49,6 +49,7 @@ import (
 	"follow-email-backend/internal/routes"
 	"follow-email-backend/internal/services"
 	"follow-email-backend/pkg/ai"
+	"follow-email-backend/pkg/debug"
 	"follow-email-backend/pkg/encryption"
 	"follow-email-backend/pkg/oauth"
 	"follow-email-backend/pkg/storage"
@@ -73,6 +74,11 @@ func main() {
 
 	// Load configuration
 	cfg := config.Load()
+
+	// Initialize debug logging to file
+	debug.SetLogsDirectory("logs")
+	defer debug.CloseLogFile()
+	log.Println("Debug logging initialized - logs will be saved to logs/ directory")
 
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {

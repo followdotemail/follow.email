@@ -84,18 +84,18 @@ type SyncEmailsRequest struct {
 // NEED TO CHECK THIS CODE MANUALLY
 // AnalyzeEmailRequest represents the request body for email analysis
 type AnalyzeEmailRequest struct {
-	Subject string `json:"subject" binding:"required"`
+	Subject   string `json:"subject" binding:"required"`
 	FromEmail string `json:"from_email" binding:"required"`
-	Body string `json:"body" binding:"required"`
+	Body      string `json:"body" binding:"required"`
 }
 
 // NEED TO CHECK THIS CODE MANUALLY
 // GenerateResponseRequest represents the request body for response generation
 type GenerateResponseRequest struct {
 	OriginalSubject string `json:"original_subject" binding:"required"`
-	OriginalBody string `json:"original_body" binding:"required"`
-	FromEmail string `json:"from_email" binding:"required"`
-	UserContext string `json:"user_context,omitempty"`
+	OriginalBody    string `json:"original_body" binding:"required"`
+	FromEmail       string `json:"from_email" binding:"required"`
+	UserContext     string `json:"user_context,omitempty"`
 }
 
 // NEED TO CHECK THIS CODE MANUALLY
@@ -378,6 +378,11 @@ type EmailQueryRequest struct {
 	FollowUpStatus   string     `form:"followup_status" json:"followup_status"`
 	SortBy           string     `form:"sort_by" json:"sort_by"`
 	SortOrder        string     `form:"sort_order" json:"sort_order"`
+	// Category and label filters
+	Category    string `form:"category" json:"category"`           // Filter by category (default: "personal")
+	SystemLabel string `form:"system_label" json:"system_label"`   // Filter by system label (e.g., "INBOX", "SENT", "STARRED")
+	UserLabelID *int   `form:"user_label_id" json:"user_label_id"` // Filter by user label ID (optional)
+	NoDefaults  *bool  `form:"no_defaults" json:"no_defaults"`     // If true, skip default category/system_label filters
 }
 
 // FilteredEmail represents a filtered email response with only required fields
@@ -458,12 +463,12 @@ type EmailQueryResponse struct {
 
 // PaginationInfo represents pagination metadata
 type PaginationInfo struct {
-	Page int `json:"page"`
-	Limit int `json:"limit"`
-	Total int64 `json:"total"`
-	TotalPages int `json:"total_pages"`
-	HasNext bool `json:"has_next"`
-	HasPrev bool `json:"has_prev"`
+	Page       int   `json:"page"`
+	Limit      int   `json:"limit"`
+	Total      int64 `json:"total"`
+	TotalPages int   `json:"total_pages"`
+	HasNext    bool  `json:"has_next"`
+	HasPrev    bool  `json:"has_prev"`
 }
 
 // NEED TO CHECK THIS CODE MANUALLY
@@ -561,6 +566,36 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 	}
 	if req.FollowUpStatus != "" {
 		query = query.Where("followup_status = ?", req.FollowUpStatus)
+	}
+
+	// Apply category and label filters
+	// Check if we should apply default filters (skip if no_defaults=true)
+	applyDefaults := req.NoDefaults == nil || !*req.NoDefaults
+
+	// Category filter (default: "personal")
+	if req.Category != "" {
+		query = query.Where("category = ?", req.Category)
+	} else if applyDefaults {
+		query = query.Where("category = ?", "personal")
+	}
+
+	// System label filter
+	// Default: filter by INBOX, IMPORTANT, or UNREAD (emails that appear in these)
+	if req.SystemLabel != "" {
+		// Filter by specific system label - check if system_labels JSONB contains the label
+		query = query.Where("system_labels @> ?", fmt.Sprintf(`["%s"]`, req.SystemLabel))
+	} else if applyDefaults {
+		// Default: show emails that have INBOX, IMPORTANT, or UNREAD in system_labels
+		query = query.Where(`
+			system_labels @> '["INBOX"]' 
+			AND NOT (system_labels ?| array['TRASH', 'SPAM', 'ARCHIVED', 'DRAFT', 'SENT', 'CHAT'])
+		`)
+	}
+
+	// User label filter (optional, no default)
+	if req.UserLabelID != nil {
+		// Filter by user label ID - check if user_label_ids JSONB contains the ID
+		query = query.Where("user_label_ids @> ?", fmt.Sprintf(`[%d]`, *req.UserLabelID))
 	}
 
 	// Get total count for pagination
@@ -674,7 +709,7 @@ func (h *EmailHandler) GetEmailByID(c *gin.Context) {
 	var email models.Email
 	if err := h.db.Select(
 		"id, user_id, message_id, thread_id, subject, from_email, from_name, to_emails, cc_emails, bcc_emails, sent_at, received_at, created_at, updated_at, "+
-			"is_read, is_important, has_attachments, labels, ai_summary, ai_sentiment, a_ipriority, requires_follow_up, follow_up_status, last_follow_up_at, follow_up_count").
+			"is_read, is_important, has_attachments, labels, category, system_labels, user_label_ids, ai_summary, ai_sentiment, a_ipriority, requires_follow_up, follow_up_status, last_follow_up_at, follow_up_count").
 		Where("id = ? AND user_id = ?", emailID, userID).
 		First(&email).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {

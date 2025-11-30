@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"follow-email-backend/internal/models"
+	"follow-email-backend/pkg/debug"
 	"follow-email-backend/pkg/email"
 	gmailpkg "follow-email-backend/pkg/gmail"
 	"follow-email-backend/pkg/oauth"
@@ -489,6 +490,8 @@ func (s *GmailSyncService) processGmailMessage(ctx context.Context, service *gma
 		// Update existing email record
 		emailData.ID = existingEmail.ID
 		emailData.CreatedAt = existingEmail.CreatedAt
+		debug.DebugTextPrint(fmt.Sprintf("Updating email %s - Category: %s, SystemLabels: %s, UserLabelIDs: %s",
+			messageID, emailData.Category, emailData.SystemLabels, emailData.UserLabelIDs))
 		if err := s.db.Save(emailData).Error; err != nil {
 			return fmt.Errorf("failed to update email record: %w", err)
 		}
@@ -546,23 +549,23 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 	parsedLabels := gmailpkg.ParseGmailLabels(message.LabelIds)
 
 	// DEBUG: Log parsed labels for this email
-	log.Printf("DEBUG: Email %s - Raw LabelIds: %v", message.Id, message.LabelIds)
-	log.Printf("DEBUG: Email %s - Category: %s, SystemLabels: %v, GmailUserLabelIDs: %v",
-		message.Id, parsedLabels.Category, parsedLabels.SystemLabels, parsedLabels.GmailUserLabelIDs)
+	debug.DebugTextPrint(fmt.Sprintf("Email %s - Raw LabelIds: %v", message.Id, message.LabelIds))
+	debug.DebugTextPrint(fmt.Sprintf("Email %s - Category: %s, SystemLabels: %v, GmailUserLabelIDs: %v",
+		message.Id, parsedLabels.Category, parsedLabels.SystemLabels, parsedLabels.GmailUserLabelIDs))
 
 	var userLabelIDs []int
 	if len(parsedLabels.GmailUserLabelIDs) > 0 {
 		var labels []models.UserLabel
 		s.db.Where("user_id = ? AND gmail_label_id IN ?", userID, parsedLabels.GmailUserLabelIDs).Select("id").Find(&labels)
 
-		log.Printf("DEBUG: Email %s - Found %d matching labels in DB for GmailUserLabelIDs", message.Id, len(labels))
+		debug.DebugTextPrint(fmt.Sprintf("Email %s - Found %d matching labels in DB for GmailUserLabelIDs", message.Id, len(labels)))
 
 		for _, label := range labels {
 			userLabelIDs = append(userLabelIDs, label.ID)
 		}
 	}
 
-	log.Printf("DEBUG: Email %s - Final userLabelIDs: %v (JSON: %s)", message.Id, userLabelIDs, gmailpkg.ToJson(userLabelIDs))
+	debug.DebugTextPrint(fmt.Sprintf("Email %s - Final userLabelIDs: %v (JSON: %s)", message.Id, userLabelIDs, gmailpkg.ToJson(userLabelIDs)))
 
 	return &models.Email{
 		UserID:         userID,
@@ -882,7 +885,7 @@ func (s *GmailSyncService) updateEmailLabels(ctx context.Context, service *gmail
 		return fmt.Errorf("failed to fetch message for label update: %w", err)
 	}
 
-	// Serialize labels to JSON
+	// Serialize labels to JSON (for legacy labels column)
 	var labelsJSON string
 	if len(message.LabelIds) > 0 {
 		if labelsBytes, err := json.Marshal(message.LabelIds); err == nil {
@@ -890,12 +893,31 @@ func (s *GmailSyncService) updateEmailLabels(ctx context.Context, service *gmail
 		}
 	}
 
+	// Parse labels into category, system labels, and user label IDs
+	parsedLabels := gmailpkg.ParseGmailLabels(message.LabelIds)
+
+	// Look up user label IDs from the database
+	var userLabelIDs []int
+	if len(parsedLabels.GmailUserLabelIDs) > 0 {
+		var labels []models.UserLabel
+		s.db.Where("user_id = ? AND gmail_label_id IN ?", userID, parsedLabels.GmailUserLabelIDs).Select("id").Find(&labels)
+		for _, label := range labels {
+			userLabelIDs = append(userLabelIDs, label.ID)
+		}
+	}
+
+	debug.DebugTextPrint(fmt.Sprintf("updateEmailLabels for %s - Category: %s, SystemLabels: %v, UserLabelIDs: %v",
+		messageID, parsedLabels.Category, parsedLabels.SystemLabels, userLabelIDs))
+
 	return s.db.Model(&models.Email{}).
 		Where("message_id = ? AND user_id = ?", messageID, userID).
 		Updates(map[string]interface{}{
-			"labels":       labelsJSON,
-			"last_sync_at": time.Now(),
-			"updated_at":   time.Now(),
+			"labels":         labelsJSON,
+			"category":       parsedLabels.Category,
+			"system_labels":  gmailpkg.ToJson(parsedLabels.SystemLabels),
+			"user_label_ids": gmailpkg.ToJson(userLabelIDs),
+			"last_sync_at":   time.Now(),
+			"updated_at":     time.Now(),
 		}).Error
 }
 

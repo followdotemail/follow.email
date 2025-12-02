@@ -1,4 +1,5 @@
-"use client";
+ "use client";
+import * as React from "react";
 import { ComponentProps } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -29,13 +30,22 @@ interface EmailData {
 
 interface MailListProps {
   items: EmailData[];
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
-export function MailList({ items }: MailListProps) {
+export function MailList({
+  items,
+  hasMore,
+  isLoadingMore,
+  onLoadMore,
+}: MailListProps) {
   const [mail, setMail] = useMail();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const loaderRef = React.useRef<HTMLDivElement | null>(null);
 
   // Helper function to extract name from email
   const getNameFromEmail = (email: string) => {
@@ -54,6 +64,32 @@ export function MailList({ items }: MailListProps) {
       return [];
     }
   };
+
+  React.useEffect(() => {
+    if (!hasMore || !onLoadMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (entry?.isIntersecting) {
+          onLoadMore();
+        }
+      },
+      {
+        root: null,
+        rootMargin: "200px",
+        threshold: 0.1,
+      },
+    );
+
+    if (loaderRef.current) {
+      observer.observe(loaderRef.current);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [hasMore, onLoadMore]);
 
   return (
     <ScrollArea className="h-[calc(100vh-60px)] overflow-y-auto">
@@ -118,6 +154,16 @@ export function MailList({ items }: MailListProps) {
             </button>
           );
         })}
+        <div
+          ref={loaderRef}
+          className="h-8 flex items-center justify-center text-xs text-muted-foreground"
+        >
+          {isLoadingMore
+            ? "Loading more emails..."
+            : hasMore
+              ? "Scroll to load more"
+              : "No more emails"}
+        </div>
       </div>
     </ScrollArea>
   );

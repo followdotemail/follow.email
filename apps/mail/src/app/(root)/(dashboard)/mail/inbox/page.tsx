@@ -1,13 +1,13 @@
 import { cookies } from "next/headers";
 import { accounts } from "@/constants/mail-data";
-import { Mail } from "@/components/mail/mail";
+import { Mail, type EmailData } from "@/components/mail/mail";
 import { fetchMailLists } from "@/server/api/mail-lists";
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 
 export default async function MailPage() {
   const { getToken } = await auth();
-  
+
   if (!getToken) {
     redirect("/sign-in");
   }
@@ -17,10 +17,8 @@ export default async function MailPage() {
     redirect("/sign-in");
   }
 
-  const mailData = await fetchMailLists(token);
+  const mailData = await fetchMailLists(token, 1, 20);
 
-  console.log("MailPage mailData:", mailData);
-  
   const cookieStore = await cookies();
   const layout = cookieStore.get("react-resizable-panels:layout:mail");
   const collapsed = cookieStore.get("react-resizable-panels:collapsed");
@@ -28,12 +26,15 @@ export default async function MailPage() {
   const defaultLayout = layout ? JSON.parse(layout.value) : undefined;
   const defaultCollapsed = collapsed ? JSON.parse(collapsed.value) : undefined;
 
+  const mails = (mailData.data || []) as EmailData[];
+
   return (
     <>
       <div className=" flex-col md:flex">
         <Mail
           accounts={accounts}
-          mails={mailData.data || []}
+          mails={mails}
+          initialPagination={mailData.pagination}
           defaultLayout={defaultLayout}
           defaultCollapsed={defaultCollapsed}
           navCollapsedSize={4}

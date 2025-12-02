@@ -18,7 +18,7 @@ import { MailList } from "@/components/mail/mail-list";
 import { Sidebar } from "@/components/mail/sidebar";
 import { useMail } from "@/store/use-mail";
 // Define the real email data structure
-interface EmailData {
+export interface EmailData {
   id: string;
   clerk_id: string;
   message_id: string;
@@ -61,6 +61,15 @@ import { FeedbackIcon } from "@/utils/icons/feedback";
 import { SettingIcon } from "@/utils/icons/setting";
 import { ClockIcon } from "@/utils/icons/clock";
 
+interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+}
+
 interface MailProps {
   accounts: {
     label: string;
@@ -68,6 +77,7 @@ interface MailProps {
     icon: React.ReactNode;
   }[];
   mails: EmailData[];
+  initialPagination?: Pagination;
   defaultLayout: number[] | undefined;
   defaultCollapsed?: boolean;
   navCollapsedSize: number;
@@ -137,6 +147,7 @@ const navItems = {
 export function Mail({
   accounts,
   mails,
+  initialPagination,
   defaultLayout = [20, 32, 48],
   defaultCollapsed = false,
   navCollapsedSize,
@@ -145,8 +156,38 @@ export function Mail({
   const [mail] = useMail();
   const [isNavOpen, setIsNavOpen] = React.useState(false);
   const [emailCategory, setEmailCategory] = React.useState("primary");
+  const [emails, setEmails] = React.useState<EmailData[]>(mails);
+  const [pagination, setPagination] = React.useState<Pagination | undefined>(
+    initialPagination,
+  );
+  const [isLoadingMore, setIsLoadingMore] = React.useState(false);
 
-  const selectedMail: EmailData | null = mails.find((item) => item.id === mail.selected) || null;
+  const handleLoadMore = React.useCallback(async () => {
+    if (isLoadingMore) return;
+    if (!pagination || !pagination.has_next) return;
+
+    try {
+      setIsLoadingMore(true);
+      const nextPage = pagination.page + 1;
+      const res = await fetch(
+        `/api/mails?page=${nextPage}&limit=${pagination.limit}`,
+      );
+      if (!res.ok) {
+        throw new Error(`Failed to load more emails: ${res.status}`);
+      }
+      const data = await res.json();
+
+      setEmails((prev) => [...prev, ...(data.data || [])]);
+      setPagination(data.pagination ?? pagination);
+    } catch (error) {
+      console.error("Error loading more emails:", error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, pagination]);
+
+  const selectedMail: EmailData | null =
+    emails.find((item) => item.id === mail.selected) || null;
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -254,7 +295,12 @@ export function Mail({
               </div>
 
               <div>
-                <MailList items={mails} />
+                <MailList
+                  items={emails}
+                  hasMore={pagination?.has_next}
+                  isLoadingMore={isLoadingMore}
+                  onLoadMore={handleLoadMore}
+                />
               </div>
             </div>
           </ResizablePanel>
@@ -320,7 +366,12 @@ export function Mail({
                 </Select>
               </div>
 
-              <MailList items={mails} />
+              <MailList
+                items={emails}
+                hasMore={pagination?.has_next}
+                isLoadingMore={isLoadingMore}
+                onLoadMore={handleLoadMore}
+              />
             </div>
           </div>
 

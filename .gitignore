@@ -139,3 +139,5 @@ temp/
 instance-info.json
 
 gmail_response/
+apps/hermes/deployments/ssl_certs/
+apps/hermes/logs

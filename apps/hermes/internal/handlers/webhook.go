@@ -16,6 +16,7 @@ import (
 	"follow-email-backend/internal/queue"
 	"follow-email-backend/internal/services"
 	"follow-email-backend/pkg/ai"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -44,31 +45,93 @@ func NewWebhookHandler(cfg *config.Config, db *gorm.DB, emailSyncService *servic
 func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) error {
 	signature := c.GetHeader("Upstash-Signature")
 	if signature == "" {
+		fmt.Println("DEBUG: Missing Upstash-Signature header")
 		return fmt.Errorf("missing Upstash-Signature header")
 	}
 
-	// Parse signature header (format: "v1=<signature>")
+	DebugTextPrint(fmt.Sprintf("Received signature: %s", signature))
+	DebugTextPrint(fmt.Sprintf("Body length: %d bytes", len(body)))
+
+	// QStash now sends JWT tokens directly (new format)
+	// Check if it's a JWT (contains two dots)
+	if strings.Count(signature, ".") == 2 {
+		fmt.Println("DEBUG: Detected JWT signature format")
+		// This is a JWT token - QStash's new signature format
+		// For JWT verification, we just verify the signature using HMAC
+		// The JWT payload contains a hash of the body
+
+		// Try to verify with current key
+		if h.verifyJWTSignature(signature, h.config.QStashCurrentSigningKey) {
+			fmt.Println("DEBUG: JWT signature verified with current key")
+			return nil
+		}
+
+		// Try next signing key
+		if h.config.QStashNextSigningKey != "" && h.verifyJWTSignature(signature, h.config.QStashNextSigningKey) {
+			fmt.Println("DEBUG: JWT signature verified with next key")
+			return nil
+		}
+
+		fmt.Println("DEBUG: JWT signature verification failed with both keys")
+		return fmt.Errorf("JWT signature verification failed")
+	}
+
+	// Old v1 format: "v1=<signature>"
+	fmt.Println("DEBUG: Using v1 signature format")
 	parts := strings.Split(signature, "=")
 	if len(parts) != 2 || parts[0] != "v1" {
+		DebugWarningTextPrint(fmt.Sprintf("Invalid v1 signature format. Got %d parts", len(parts)))
 		return fmt.Errorf("invalid signature format")
 	}
 
 	expectedSignature, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
+		DebugErrorTextPrint(fmt.Sprintf("Failed to decode signature: %v", err))
 		return fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
 	// Try current signing key first
 	if h.verifySignatureWithKey(body, expectedSignature, h.config.QStashCurrentSigningKey) {
+		fmt.Println("DEBUG: v1 signature verified with current key")
 		return nil
 	}
 
 	// Try next signing key (for key rotation)
 	if h.config.QStashNextSigningKey != "" && h.verifySignatureWithKey(body, expectedSignature, h.config.QStashNextSigningKey) {
+		fmt.Println("DEBUG: v1 signature verified with next key")
 		return nil
 	}
 
+	fmt.Println("DEBUG: v1 signature verification failed with both keys")
 	return fmt.Errorf("signature verification failed")
+}
+
+// verifyJWTSignature verifies a QStash JWT signature
+func (h *WebhookHandler) verifyJWTSignature(token string, signingKey string) bool {
+	// Split JWT into parts
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+
+	// JWT format: header.payload.signature
+	message := parts[0] + "." + parts[1]
+	signature := parts[2]
+
+	// Decode the signature from base64 URL encoding
+	expectedSig, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil {
+		DebugErrorTextPrint(fmt.Sprintf("Failed to decode JWT signature: %v", err))
+		return false
+	}
+
+	// Compute HMAC using the signing key
+	mac := hmac.New(sha256.New, []byte(signingKey))
+	mac.Write([]byte(message))
+	computedSig := mac.Sum(nil)
+
+	// Compare signatures
+	return subtle.ConstantTimeCompare(expectedSig, computedSig) == 1
 }
 
 // verifySignatureWithKey verifies signature with a specific key
@@ -77,7 +140,7 @@ func (h *WebhookHandler) verifySignatureWithKey(body, expectedSignature []byte, 
 	// mac.Write([]byte(key))
 	mac.Write(body)
 	computedSignature := mac.Sum(nil)
-	
+
 	return subtle.ConstantTimeCompare(expectedSignature, computedSignature) == 1
 }
 
@@ -115,32 +178,35 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 
 	// Create sync request
 	syncReq := &services.GmailSyncRequest{
-		UserID: userID,
+		UserID:   userID,
+		FullSync: msg.SyncType == "full",
 	}
+
+	DebugTextPrint(fmt.Sprintf("Received SyncType='%s', FullSync=%v", msg.SyncType, syncReq.FullSync))
 
 	// Process email sync using the Gmail sync service
 	fmt.Printf("Processing email sync for user: %s, message: %s\n", msg.UserID, msg.MessageID)
-	
+
 	result, err := h.gmailSyncService.SyncUserEmails(c.Request.Context(), syncReq)
 	if err != nil {
 		fmt.Printf("Email sync failed for user %s: %v\n", msg.UserID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"status": "error", 
+			"status":  "error",
 			"message": "Email sync failed",
-			"error": err.Error(),
+			"error":   err.Error(),
 		})
 		return
 	}
 
-	fmt.Printf("Email sync completed for user %s: %d emails processed, %d new, %d updated\n", 
+	fmt.Printf("Email sync completed for user %s: %d emails processed, %d new, %d updated\n",
 		msg.UserID, result.EmailsProcessed, result.NewEmails, result.UpdatedEmails)
 
 	c.JSON(http.StatusOK, gin.H{
-		"status": "success", 
-		"message": "Email sync processed",
+		"status":           "success",
+		"message":          "Email sync processed",
 		"emails_processed": result.EmailsProcessed,
-		"new_emails": result.NewEmails,
-		"updated_emails": result.UpdatedEmails,
+		"new_emails":       result.NewEmails,
+		"updated_emails":   result.UpdatedEmails,
 	})
 }
 

@@ -71,7 +71,7 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```env
 # Server
 PORT=8080
-GIN_MODE=debug
+BASE_URL=http://localhost:8080
 
 # Database (Neon / managed Postgres)
 DATABASE_URL=postgresql://username:password@your-neon-hostname/neondb?sslmode=require
@@ -79,7 +79,6 @@ DATABASE_URL=postgresql://username:password@your-neon-hostname/neondb?sslmode=re
 # Google OAuth
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
-GOOGLE_REDIRECT_URL=http://localhost:8080/api/v1/auth/gmail/callback
 ```
 
 See `env.example` for all available configuration options.

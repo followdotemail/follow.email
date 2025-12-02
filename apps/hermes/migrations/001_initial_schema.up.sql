@@ -15,11 +15,7 @@ CREATE TABLE users (
     gdpr_consent BOOLEAN DEFAULT false,
     ccpa_consent BOOLEAN DEFAULT false,
     consent_date TIMESTAMP WITH TIME ZONE,
-    data_retention_days INTEGER DEFAULT 365,
-    
-    -- Subscription and billing
-    subscription_tier VARCHAR(50) DEFAULT 'free' CHECK (subscription_tier IN ('free', 'pro', 'enterprise')),
-    subscription_end TIMESTAMP WITH TIME ZONE
+    data_retention_days INTEGER DEFAULT 365
 );
 
 -- Create oauth_tokens table
@@ -36,19 +32,6 @@ CREATE TABLE oauth_tokens (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     
     UNIQUE(user_id, provider)
-);
-
--- Create user_preferences table
-CREATE TABLE user_preferences (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-    auto_followup_enabled BOOLEAN DEFAULT true,
-    followup_delay_hours INTEGER DEFAULT 24,
-    max_followup_attempts INTEGER DEFAULT 3,
-    ai_response_enabled BOOLEAN DEFAULT true,
-    email_notifications BOOLEAN DEFAULT true,
-    webhook_notifications BOOLEAN DEFAULT false,
-    webhook_url TEXT
 );
 
 -- Create emails table
@@ -149,7 +132,6 @@ CREATE TABLE email_analytics (
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_provider ON users(provider);
 CREATE INDEX idx_users_active ON users(is_active);
-CREATE INDEX idx_users_subscription ON users(subscription_tier);
 
 CREATE INDEX idx_oauth_tokens_user_id ON oauth_tokens(user_id);
 CREATE INDEX idx_oauth_tokens_provider ON oauth_tokens(provider);

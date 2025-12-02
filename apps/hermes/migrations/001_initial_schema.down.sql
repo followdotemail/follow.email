@@ -33,7 +33,6 @@ DROP INDEX IF EXISTS idx_oauth_tokens_expires_at;
 DROP INDEX IF EXISTS idx_oauth_tokens_provider;
 DROP INDEX IF EXISTS idx_oauth_tokens_user_id;
 
-DROP INDEX IF EXISTS idx_users_subscription;
 DROP INDEX IF EXISTS idx_users_active;
 DROP INDEX IF EXISTS idx_users_provider;
 DROP INDEX IF EXISTS idx_users_email;
@@ -43,6 +42,5 @@ DROP TABLE IF EXISTS email_analytics;
 DROP TABLE IF EXISTS followup_schedules;
 DROP TABLE IF EXISTS followup_templates;
 DROP TABLE IF EXISTS emails;
-DROP TABLE IF EXISTS user_preferences;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS users;

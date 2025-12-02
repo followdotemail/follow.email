@@ -14,16 +14,17 @@ import (
 type MessageType string
 
 const (
-	EmailSyncType      MessageType = "email_sync"
-	EmailAnalysisType  MessageType = "email_analysis"
-	FollowUpType       MessageType = "follow_up"
-	ScheduledTaskType  MessageType = "scheduled_task"
+	EmailSyncType     MessageType = "email_sync"
+	EmailAnalysisType MessageType = "email_analysis"
+	FollowUpType      MessageType = "follow_up"
+	ScheduledTaskType MessageType = "scheduled_task"
 )
 
 // Message structures for different queue operations
 type EmailSyncMessage struct {
 	UserID    string `json:"user_id"`
 	MessageID string `json:"message_id,omitempty"`
+	SyncType  string `json:"sync_type,omitempty"` // "full" or "incremental" (default: incremental)
 }
 
 type EmailAnalysisMessage struct {
@@ -87,7 +88,7 @@ func (q *QStashService) publishMessage(ctx context.Context, msgType MessageType,
 	if err != nil {
 		return fmt.Errorf("failed to marshal message payload: %w", err)
 	}
-	
+
 	err = json.Unmarshal(jsonBytes, &bodyMap)
 	if err != nil {
 		return fmt.Errorf("failed to convert payload to map: %w", err)
@@ -97,23 +98,23 @@ func (q *QStashService) publishMessage(ctx context.Context, msgType MessageType,
 	// Convert message type to match webhook route format (underscore to hyphen)
 	routeName := string(msgType)
 	switch msgType {
-		case EmailSyncType:
-			routeName = "email-sync"
-		case EmailAnalysisType:
-			routeName = "email-analysis"
-		case FollowUpType:
-			routeName = "follow-up"
-		case ScheduledTaskType:
-			routeName = "scheduled-task"
-		default:
-			return fmt.Errorf("invalid message type: %s", msgType)
+	case EmailSyncType:
+		routeName = "email-sync"
+	case EmailAnalysisType:
+		routeName = "email-analysis"
+	case FollowUpType:
+		routeName = "follow-up"
+	case ScheduledTaskType:
+		routeName = "scheduled-task"
+	default:
+		return fmt.Errorf("invalid message type: %s", msgType)
 	}
 	webhookURL := fmt.Sprintf("%s/%s", q.baseURL, routeName)
 
 	// Create the publish options
 	options := qstash.PublishJSONOptions{
-		Url:     webhookURL,
-		Body:    bodyMap,
+		Url:  webhookURL,
+		Body: bodyMap,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
@@ -128,7 +129,7 @@ func (q *QStashService) publishMessage(ctx context.Context, msgType MessageType,
 	// Debug logging
 	log.Printf("Publishing %s message to URL: %s", msgType, webhookURL)
 	log.Printf("QStash client configured with baseURL: %s", q.baseURL)
-	
+
 	// Publish the message
 	_, err = q.client.PublishJSON(options)
 	if err != nil {
@@ -148,7 +149,7 @@ func (q *QStashService) ScheduleRecurringTask(ctx context.Context, cron string, 
 	if err != nil {
 		return fmt.Errorf("failed to marshal scheduled task payload: %w", err)
 	}
-	
+
 	err = json.Unmarshal(jsonBytes, &bodyMap)
 	if err != nil {
 		return fmt.Errorf("failed to convert payload to map: %w", err)

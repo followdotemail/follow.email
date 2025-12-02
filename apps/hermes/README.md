@@ -179,7 +179,6 @@ The application uses PostgreSQL with automatic migrations. The database schema i
 
 ### Core Tables
 - `users` - User profiles and authentication data
-- `external_accounts` - OAuth provider connections
 - `emails` - Email data and metadata
 - `followup_templates` - Email templates for follow-ups
 - `followup_schedules` - Scheduled follow-up tasks
@@ -189,10 +188,16 @@ Migrations run automatically on application startup. Manual migration files are 
 
 ```bash
 migrations/
-├── 001_initial_schema.up.sql      # Initial database schema
-├── 002_clerk_integration.up.sql   # Clerk authentication integration
-├── 003_convert_to_uuid.up.sql     # UUID conversion for better scalability
-└── *.down.sql                     # Rollback migrations
+├── 001_initial_schema.up.sql           # Initial database schema
+├── 003_convert_to_uuid.up.sql          # UUID conversion for better scalability
+├── 004_add_gmail_consent_table.up.sql  # Gmail consent and sync tracking
+├── 005_remove_gmail_fields_from_users.up.sql # Move Gmail fields to separate table
+├── 006_add_user_privacy_and_subscription_tables.up.sql # Privacy metadata table
+├── 007_remove_privacy_subscription_from_users.up.sql # Move privacy fields
+├── 008_add_labels_to_emails.up.sql     # Add labels column to emails
+├── 009_change_labels_to_jsonb.up.sql   # Convert labels to JSONB
+├── 010_add_clerk_fields_to_users.up.sql # Add Clerk authentication fields
+└── *.down.sql                          # Rollback migrations
 ```
 
 To manually run migrations:

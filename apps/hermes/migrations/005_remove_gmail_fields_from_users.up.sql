@@ -1,5 +1,5 @@
 -- Migration: Remove Gmail sync fields from users table
--- These fields have been moved to provider_sync_metadata table
+-- These fields have been moved to gmail_consent table
 
 -- Remove Gmail sync columns from users table
 ALTER TABLE users 

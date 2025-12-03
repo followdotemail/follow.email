@@ -569,6 +569,90 @@ func (s *GmailSyncService) processGmailMessage(ctx context.Context, service *gma
 	return nil
 }
 
+// MarkEmailAsRead marks an email as read or unread in Gmail and the database
+func (s *GmailSyncService) MarkEmailAsRead(ctx context.Context, userID uuid.UUID, messageID string, isRead bool) error {
+	debug.DebugTextPrint(fmt.Sprintf("Marking email %s as read=%v for user %s", messageID, isRead, userID))
+
+	// Check current state in database first
+	var email models.Email
+	if err := s.db.Where("user_id = ? AND message_id = ?", userID, messageID).First(&email).Error; err != nil {
+		return fmt.Errorf("failed to find email in database: %w", err)
+	}
+
+	// If state already matches, skip Gmail API call and return success
+	if email.IsRead == isRead {
+		debug.DebugTextPrint(fmt.Sprintf("Email %s is already in requested state (read=%v). Skipping Gmail sync.", messageID, isRead))
+		return nil
+	}
+
+	// Get valid token for user
+	tokenInfo, err := s.tokenService.GetValidToken(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get valid Gmail token: %w", err)
+	}
+
+	// Create Gmail service
+	gmailService, err := s.gmailOAuthService.CreateGmailService(ctx, tokenInfo)
+	if err != nil {
+		return fmt.Errorf("failed to create Gmail service: %w", err)
+	}
+
+	// Prepare label modification
+	req := &gmail.BatchModifyMessagesRequest{
+		Ids: []string{messageID},
+	}
+
+	if isRead {
+		req.RemoveLabelIds = []string{"UNREAD"}
+	} else {
+		req.AddLabelIds = []string{"UNREAD"}
+	}
+
+	// Execute Gmail API call
+	debug.DebugTextPrint(fmt.Sprintf("Updating Gmail labels for message %s", messageID))
+	if err := gmailService.Users.Messages.BatchModify("me", req).Do(); err != nil {
+		return fmt.Errorf("failed to update email status in Gmail: %w", err)
+	}
+
+	// Update local database
+	email.IsRead = isRead
+	email.UpdatedAt = time.Now()
+
+	// Update SystemLabels to keep them consistent with Gmail
+	var systemLabels []string
+	if err := json.Unmarshal([]byte(email.SystemLabels), &systemLabels); err == nil {
+		var newLabels []string
+		hasUnread := false
+
+		for _, l := range systemLabels {
+			if l == "UNREAD" {
+				// If marking as read, skip UNREAD label
+				if !isRead {
+					newLabels = append(newLabels, l)
+					hasUnread = true
+				}
+			} else {
+				newLabels = append(newLabels, l)
+			}
+		}
+
+		// If marking as unread and UNREAD not present, add it
+		if !isRead && !hasUnread {
+			newLabels = append(newLabels, "UNREAD")
+		}
+
+		if jsonBytes, err := json.Marshal(newLabels); err == nil {
+			email.SystemLabels = string(jsonBytes)
+		}
+	}
+
+	if err := s.db.Save(&email).Error; err != nil {
+		return fmt.Errorf("failed to update email status in database: %w", err)
+	}
+
+	return nil
+}
+
 // extractEmailData extracts email data from Gmail message
 func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.UUID) *models.Email {
 	headers := make(map[string]string)

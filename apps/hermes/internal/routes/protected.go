@@ -41,6 +41,9 @@ func SetupProtectedRoutes(
 
 		// Email sending endpoint
 		emailSync.POST("/send", emailHandler.SendEmail)
+
+		// Email status update endpoint
+		emailSync.PATCH("/:id/status", emailHandler.UpdateEmailStatus)
 	}
 
 	// AI analysis endpoints with specific rate limits

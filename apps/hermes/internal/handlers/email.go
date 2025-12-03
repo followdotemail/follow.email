@@ -113,6 +113,66 @@ type ProcessEmailContentResponse struct {
 	HasBlockedImages bool   `json:"has_blocked_images"`
 }
 
+// UpdateEmailStatusRequest represents the request body for updating email status
+type UpdateEmailStatusRequest struct {
+	IsRead bool `json:"is_read"`
+}
+
+// UpdateEmailStatus handles requests to update email status (read/unread)
+func (h *EmailHandler) UpdateEmailStatus(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Convert Clerk ID to database UUID
+	userUUID, err := h.getUserUUIDFromClerkID(userID.(string))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+
+	emailIDStr := c.Param("id")
+	// Verify email ID format
+	if _, err := uuid.Parse(emailIDStr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email ID format"})
+		return
+	}
+
+	var req UpdateEmailStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get email to find message ID
+	var email models.Email
+	if err := h.db.Select("message_id").Where("id = ? AND user_id = ?", emailIDStr, userUUID).First(&email).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Email not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve email"})
+		return
+	}
+
+	if email.MessageID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email has no message ID"})
+		return
+	}
+
+	if err := h.gmailSyncService.MarkEmailAsRead(c.Request.Context(), userUUID, email.MessageID, req.IsRead); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email status: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Email status updated successfully",
+		"is_read": req.IsRead,
+	})
+}
+
 // NEED TO CHECK THIS CODE MANUALLY
 // SyncEmails handles email synchronization requests
 func (h *EmailHandler) SyncEmails(c *gin.Context) {

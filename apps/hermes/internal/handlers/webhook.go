@@ -45,7 +45,7 @@ func NewWebhookHandler(cfg *config.Config, db *gorm.DB, emailSyncService *servic
 func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) error {
 	signature := c.GetHeader("Upstash-Signature")
 	if signature == "" {
-		fmt.Println("DEBUG: Missing Upstash-Signature header")
+		DebugTextPrint("DEBUG: Missing Upstash-Signature header")
 		return fmt.Errorf("missing Upstash-Signature header")
 	}
 
@@ -55,29 +55,29 @@ func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) erro
 	// QStash now sends JWT tokens directly (new format)
 	// Check if it's a JWT (contains two dots)
 	if strings.Count(signature, ".") == 2 {
-		fmt.Println("DEBUG: Detected JWT signature format")
+		DebugTextPrint("DEBUG: Detected JWT signature format")
 		// This is a JWT token - QStash's new signature format
 		// For JWT verification, we just verify the signature using HMAC
 		// The JWT payload contains a hash of the body
 
 		// Try to verify with current key
 		if h.verifyJWTSignature(signature, h.config.QStashCurrentSigningKey) {
-			fmt.Println("DEBUG: JWT signature verified with current key")
+			DebugTextPrint("DEBUG: JWT signature verified with current key")
 			return nil
 		}
 
 		// Try next signing key
 		if h.config.QStashNextSigningKey != "" && h.verifyJWTSignature(signature, h.config.QStashNextSigningKey) {
-			fmt.Println("DEBUG: JWT signature verified with next key")
+			DebugTextPrint("DEBUG: JWT signature verified with next key")
 			return nil
 		}
 
-		fmt.Println("DEBUG: JWT signature verification failed with both keys")
+		DebugTextPrint("DEBUG: JWT signature verification failed with both keys")
 		return fmt.Errorf("JWT signature verification failed")
 	}
 
 	// Old v1 format: "v1=<signature>"
-	fmt.Println("DEBUG: Using v1 signature format")
+	DebugTextPrint("DEBUG: Using v1 signature format")
 	parts := strings.Split(signature, "=")
 	if len(parts) != 2 || parts[0] != "v1" {
 		DebugWarningTextPrint(fmt.Sprintf("Invalid v1 signature format. Got %d parts", len(parts)))
@@ -92,17 +92,17 @@ func (h *WebhookHandler) verifyQStashSignature(c *gin.Context, body []byte) erro
 
 	// Try current signing key first
 	if h.verifySignatureWithKey(body, expectedSignature, h.config.QStashCurrentSigningKey) {
-		fmt.Println("DEBUG: v1 signature verified with current key")
+		DebugTextPrint("DEBUG: v1 signature verified with current key")
 		return nil
 	}
 
 	// Try next signing key (for key rotation)
 	if h.config.QStashNextSigningKey != "" && h.verifySignatureWithKey(body, expectedSignature, h.config.QStashNextSigningKey) {
-		fmt.Println("DEBUG: v1 signature verified with next key")
+		DebugTextPrint("DEBUG: v1 signature verified with next key")
 		return nil
 	}
 
-	fmt.Println("DEBUG: v1 signature verification failed with both keys")
+	DebugTextPrint("DEBUG: v1 signature verification failed with both keys")
 	return fmt.Errorf("signature verification failed")
 }
 
@@ -154,7 +154,7 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 
 	// Skip signature verification for local development (QStash CLI doesn't send proper signatures)
 	if h.config.Environment != "production" {
-		fmt.Println("Skipping QStash signature verification for local development")
+		DebugTextPrint("Skipping QStash signature verification for local development")
 	} else {
 		// Verify QStash signature in production
 		if err := h.verifyQStashSignature(c, body); err != nil {
@@ -176,6 +176,27 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 		return
 	}
 
+	// Handle backfill sync
+	if msg.SyncType == "backfill" {
+		DebugTextPrint(fmt.Sprintf("Processing backfill sync for user: %s", msg.UserID))
+		err := h.gmailSyncService.PerformBackfillSync(c.Request.Context(), userID)
+		if err != nil {
+			DebugErrorTextPrint(fmt.Sprintf("Backfill sync failed for user %s: %v", msg.UserID, err))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "Backfill sync failed",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": "Backfill sync processed",
+		})
+		return
+	}
+
 	// Create sync request
 	syncReq := &services.GmailSyncRequest{
 		UserID:   userID,
@@ -185,11 +206,11 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 	DebugTextPrint(fmt.Sprintf("Received SyncType='%s', FullSync=%v", msg.SyncType, syncReq.FullSync))
 
 	// Process email sync using the Gmail sync service
-	fmt.Printf("Processing email sync for user: %s, message: %s\n", msg.UserID, msg.MessageID)
+	DebugTextPrint(fmt.Sprintf("Processing email sync for user: %s, message: %s", msg.UserID, msg.MessageID))
 
 	result, err := h.gmailSyncService.SyncUserEmails(c.Request.Context(), syncReq)
 	if err != nil {
-		fmt.Printf("Email sync failed for user %s: %v\n", msg.UserID, err)
+		DebugErrorTextPrint(fmt.Sprintf("Email sync failed for user %s: %v", msg.UserID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
 			"message": "Email sync failed",
@@ -198,8 +219,8 @@ func (h *WebhookHandler) HandleEmailSync(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("Email sync completed for user %s: %d emails processed, %d new, %d updated\n",
-		msg.UserID, result.EmailsProcessed, result.NewEmails, result.UpdatedEmails)
+	DebugTextPrint(fmt.Sprintf("Email sync completed for user %s: %d emails processed, %d new, %d updated",
+		msg.UserID, result.EmailsProcessed, result.NewEmails, result.UpdatedEmails))
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "success",
@@ -232,7 +253,7 @@ func (h *WebhookHandler) HandleEmailAnalysis(c *gin.Context) {
 
 	// TODO: Process email analysis using AI service
 	// For now, just log the message
-	fmt.Printf("Processing email analysis for user: %s, email: %s\n", msg.UserID, msg.EmailID)
+	DebugTextPrint(fmt.Sprintf("Processing email analysis for user: %s, email: %s", msg.UserID, msg.EmailID))
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Email analysis processed"})
 }
@@ -259,7 +280,7 @@ func (h *WebhookHandler) HandleFollowUp(c *gin.Context) {
 
 	// TODO: Process follow-up using AI service
 	// For now, just log the message
-	fmt.Printf("Processing follow-up for user: %s, email: %s\n", msg.UserID, msg.EmailID)
+	DebugTextPrint(fmt.Sprintf("Processing follow-up for user: %s, email: %s", msg.UserID, msg.EmailID))
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Follow-up processed"})
 }
@@ -310,7 +331,7 @@ func (h *WebhookHandler) HandleScheduledTask(c *gin.Context) {
 func (h *WebhookHandler) processEmailCleanupTask(ctx context.Context, msg queue.ScheduledTaskMessage) error {
 	// Implement email cleanup logic
 	// This could involve deleting old emails, archiving, etc.
-	fmt.Printf("Processing email cleanup task for user: %s\n", msg.UserID)
+	DebugTextPrint(fmt.Sprintf("Processing email cleanup task for user: %s", msg.UserID))
 	return nil
 }
 
@@ -318,6 +339,6 @@ func (h *WebhookHandler) processEmailCleanupTask(ctx context.Context, msg queue.
 func (h *WebhookHandler) processUserAnalyticsTask(ctx context.Context, msg queue.ScheduledTaskMessage) error {
 	// Implement user analytics logic
 	// This could involve generating reports, updating metrics, etc.
-	fmt.Printf("Processing user analytics task for user: %s\n", msg.UserID)
+	DebugTextPrint(fmt.Sprintf("Processing user analytics task for user: %s", msg.UserID))
 	return nil
 }

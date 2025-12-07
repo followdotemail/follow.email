@@ -289,6 +289,45 @@ func (s *GmailSyncService) performFullSync(ctx context.Context, service *gmail.S
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	// Also sync emails with user labels that might not be in inbox/sent
+	processedMessageIDs := make(map[string]bool)
+	for _, msgID := range allMessageIDs {
+		processedMessageIDs[msgID] = true
+	}
+
+	// Get all user labels from database
+	var userLabels []models.UserLabel
+	if err := s.db.Where("user_id = ?", req.UserID).Find(&userLabels).Error; err == nil && len(userLabels) > 0 {
+		log.Printf("Syncing emails with %d user labels for user %s", len(userLabels), req.UserID)
+
+		for _, label := range userLabels {
+			// Fetch emails with this label
+			labelMessagesCall := service.Users.Messages.List("me").LabelIds(label.GmailLabelID).MaxResults(100)
+			labelMessagesResp, err := labelMessagesCall.Context(ctx).Do()
+			if err != nil {
+				log.Printf("Failed to fetch emails for label %s: %v", label.LabelName, err)
+				continue
+			}
+
+			for _, msg := range labelMessagesResp.Messages {
+				// Skip if already processed
+				if processedMessageIDs[msg.Id] {
+					continue
+				}
+
+				processedMessageIDs[msg.Id] = true
+				debug.DebugTextPrint(fmt.Sprintf("Syncing labeled email %s from label %s", msg.Id, label.LabelName))
+
+				if err := s.processGmailMessage(ctx, service, msg.Id, req.UserID, result); err != nil {
+					log.Printf("Error processing labeled message %s: %v", msg.Id, err)
+					result.Errors = append(result.Errors, fmt.Sprintf("Labeled message %s: %v", msg.Id, err))
+					continue
+				}
+				result.EmailsProcessed++
+			}
+		}
+	}
+
 	// Update user sync status
 	now := time.Now()
 	result.CompletedAt = now
@@ -408,6 +447,33 @@ func (s *GmailSyncService) processGmailMessage(ctx context.Context, service *gma
 		return fmt.Errorf("failed to get message details: %w", err)
 	}
 
+	// COMMENTING OUT NOW. USED FOR TESTING THE LABEL UPDATE
+	// DEBUG: Save Gmail API response for specific subjects to investigate label issues
+	// debugSubjects := []string{
+	// 	"Amazon Web Services GST Invoice Available",
+	// 	"Pay Your AWS Invoices Automatically with UPI AutoPay",
+	// 	"Testing email label 2",
+	// 	"Annual reminder about Google Play terms and policies",
+	// 	"Security alert for tanmoytssaha@gmail.com",
+	// }
+	//
+	// // Get subject from headers
+	// var emailSubject string
+	// for _, header := range message.Payload.Headers {
+	// 	if strings.EqualFold(header.Name, "Subject") {
+	// 		emailSubject = header.Value
+	// 		break
+	// 	}
+	// }
+	//
+	// // Check if this email matches any debug subjects
+	// for _, debugSubject := range debugSubjects {
+	// 	if strings.Contains(emailSubject, debugSubject) || strings.Contains(debugSubject, emailSubject) {
+	// 		s.saveGmailResponseForDebug(message, emailSubject)
+	// 		break
+	// 	}
+	// }
+
 	// Log raw Gmail API response for debugging
 	// fmt.Println("=== RAW GMAIL API RESPONSE FOR MESSAGE %s ===", messageID)
 	// fmt.Printf(message.Payload.Body.Data)
@@ -498,6 +564,90 @@ func (s *GmailSyncService) processGmailMessage(ctx context.Context, service *gma
 		result.UpdatedEmails++
 	} else {
 		return fmt.Errorf("failed to check existing email: %w", existsResult.Error)
+	}
+
+	return nil
+}
+
+// MarkEmailAsRead marks an email as read or unread in Gmail and the database
+func (s *GmailSyncService) MarkEmailAsRead(ctx context.Context, userID uuid.UUID, messageID string, isRead bool) error {
+	debug.DebugTextPrint(fmt.Sprintf("Marking email %s as read=%v for user %s", messageID, isRead, userID))
+
+	// Check current state in database first
+	var email models.Email
+	if err := s.db.Where("user_id = ? AND message_id = ?", userID, messageID).First(&email).Error; err != nil {
+		return fmt.Errorf("failed to find email in database: %w", err)
+	}
+
+	// If state already matches, skip Gmail API call and return success
+	if email.IsRead == isRead {
+		debug.DebugTextPrint(fmt.Sprintf("Email %s is already in requested state (read=%v). Skipping Gmail sync.", messageID, isRead))
+		return nil
+	}
+
+	// Get valid token for user
+	tokenInfo, err := s.tokenService.GetValidToken(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get valid Gmail token: %w", err)
+	}
+
+	// Create Gmail service
+	gmailService, err := s.gmailOAuthService.CreateGmailService(ctx, tokenInfo)
+	if err != nil {
+		return fmt.Errorf("failed to create Gmail service: %w", err)
+	}
+
+	// Prepare label modification
+	req := &gmail.BatchModifyMessagesRequest{
+		Ids: []string{messageID},
+	}
+
+	if isRead {
+		req.RemoveLabelIds = []string{"UNREAD"}
+	} else {
+		req.AddLabelIds = []string{"UNREAD"}
+	}
+
+	// Execute Gmail API call
+	debug.DebugTextPrint(fmt.Sprintf("Updating Gmail labels for message %s", messageID))
+	if err := gmailService.Users.Messages.BatchModify("me", req).Do(); err != nil {
+		return fmt.Errorf("failed to update email status in Gmail: %w", err)
+	}
+
+	// Update local database
+	email.IsRead = isRead
+	email.UpdatedAt = time.Now()
+
+	// Update SystemLabels to keep them consistent with Gmail
+	var systemLabels []string
+	if err := json.Unmarshal([]byte(email.SystemLabels), &systemLabels); err == nil {
+		var newLabels []string
+		hasUnread := false
+
+		for _, l := range systemLabels {
+			if l == "UNREAD" {
+				// If marking as read, skip UNREAD label
+				if !isRead {
+					newLabels = append(newLabels, l)
+					hasUnread = true
+				}
+			} else {
+				newLabels = append(newLabels, l)
+			}
+		}
+
+		// If marking as unread and UNREAD not present, add it
+		if !isRead && !hasUnread {
+			newLabels = append(newLabels, "UNREAD")
+		}
+
+		if jsonBytes, err := json.Marshal(newLabels); err == nil {
+			email.SystemLabels = string(jsonBytes)
+		}
+	}
+
+	if err := s.db.Save(&email).Error; err != nil {
+		return fmt.Errorf("failed to update email status in database: %w", err)
 	}
 
 	return nil
@@ -869,6 +1019,64 @@ func (s *GmailSyncService) isMessageRead(message *gmail.Message) bool {
 	}
 	return true
 }
+
+// COMMENTING OUT NOW. USED FOR TESTING THE LABEL UPDATE
+// saveGmailResponseForDebug saves the Gmail API response to a JSON file for debugging
+// func (s *GmailSyncService) saveGmailResponseForDebug(message *gmail.Message, subject string) {
+// 	// Create debug directory if it doesn't exist
+// 	debugDir := "logs/gmail_debug"
+// 	if err := os.MkdirAll(debugDir, 0755); err != nil {
+// 		log.Printf("Failed to create debug directory: %v", err)
+// 		return
+// 	}
+//
+// 	// Create a safe filename from subject
+// 	safeSubject := strings.ReplaceAll(subject, " ", "_")
+// 	safeSubject = strings.ReplaceAll(safeSubject, "/", "_")
+// 	safeSubject = strings.ReplaceAll(safeSubject, "\\", "_")
+// 	safeSubject = strings.ReplaceAll(safeSubject, ":", "_")
+// 	if len(safeSubject) > 50 {
+// 		safeSubject = safeSubject[:50]
+// 	}
+//
+// 	filename := fmt.Sprintf("%s/%s_%s.json", debugDir, message.Id, safeSubject)
+//
+// 	// Create debug response structure
+// 	debugResponse := map[string]interface{}{
+// 		"message_id":    message.Id,
+// 		"thread_id":     message.ThreadId,
+// 		"label_ids":     message.LabelIds,
+// 		"snippet":       message.Snippet,
+// 		"history_id":    message.HistoryId,
+// 		"internal_date": message.InternalDate,
+// 		"size_estimate": message.SizeEstimate,
+// 		"subject":       subject,
+// 	}
+//
+// 	// Add headers
+// 	headers := make(map[string]string)
+// 	if message.Payload != nil {
+// 		for _, h := range message.Payload.Headers {
+// 			headers[h.Name] = h.Value
+// 		}
+// 	}
+// 	debugResponse["headers"] = headers
+//
+// 	// Marshal to JSON
+// 	jsonData, err := json.MarshalIndent(debugResponse, "", "  ")
+// 	if err != nil {
+// 		log.Printf("Failed to marshal debug response: %v", err)
+// 		return
+// 	}
+//
+// 	// Write to file
+// 	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
+// 		log.Printf("Failed to write debug file: %v", err)
+// 		return
+// 	}
+//
+// 	debug.DebugSuccessTextPrint(fmt.Sprintf("Saved Gmail API response for '%s' to %s", subject, filename))
+// }
 
 // markEmailAsDeleted marks an email as deleted in the database
 func (s *GmailSyncService) markEmailAsDeleted(messageID string, userID uuid.UUID) error {

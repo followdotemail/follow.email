@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/upstash/qstash-go"
+
+	"follow-email-backend/pkg/debug"
 )
 
 // MessageType represents the type of message being sent
@@ -63,6 +64,11 @@ func NewQStashService(token, baseURL string) *QStashService {
 // PublishEmailSync publishes an email sync message
 func (q *QStashService) PublishEmailSync(ctx context.Context, msg EmailSyncMessage) error {
 	return q.publishMessage(ctx, EmailSyncType, msg, nil)
+}
+
+// PublishEmailSyncWithDelay publishes an email sync message with a delay
+func (q *QStashService) PublishEmailSyncWithDelay(ctx context.Context, msg EmailSyncMessage, delay time.Duration) error {
+	return q.publishMessage(ctx, EmailSyncType, msg, &delay)
 }
 
 // PublishEmailAnalysis publishes an email analysis message
@@ -127,17 +133,17 @@ func (q *QStashService) publishMessage(ctx context.Context, msgType MessageType,
 	}
 
 	// Debug logging
-	log.Printf("Publishing %s message to URL: %s", msgType, webhookURL)
-	log.Printf("QStash client configured with baseURL: %s", q.baseURL)
+	debug.DebugTextPrint(fmt.Sprintf("Publishing %s message to URL: %s", msgType, webhookURL))
+	debug.DebugTextPrint(fmt.Sprintf("QStash client configured with baseURL: %s", q.baseURL))
 
 	// Publish the message
 	_, err = q.client.PublishJSON(options)
 	if err != nil {
-		log.Printf("QStash publish error: %v", err)
+		debug.DebugErrorTextPrint(fmt.Sprintf("QStash publish error: %v", err))
 		return fmt.Errorf("failed to publish %s message: %w", msgType, err)
 	}
 
-	log.Printf("Successfully published %s message to QStash", msgType)
+	debug.DebugTextPrint(fmt.Sprintf("Successfully published %s message to QStash", msgType))
 	return nil
 }
 
@@ -174,13 +180,13 @@ func (q *QStashService) ScheduleRecurringTask(ctx context.Context, cron string, 
 		return fmt.Errorf("failed to schedule recurring task: %w", err)
 	}
 
-	log.Printf("Successfully scheduled recurring task with cron: %s", cron)
+	debug.DebugTextPrint(fmt.Sprintf("Successfully scheduled recurring task with cron: %s", cron))
 	return nil
 }
 
 // Close gracefully shuts down the QStash service
 func (q *QStashService) Close() error {
 	// QStash client doesn't require explicit closing
-	log.Println("QStash service closed")
+	debug.DebugTextPrint("QStash service closed")
 	return nil
 }

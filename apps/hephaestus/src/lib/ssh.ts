@@ -1,4 +1,3 @@
-
 import { Client, ClientChannel } from 'ssh2';
 
 export interface SSHConfig {

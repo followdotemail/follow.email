@@ -1,5 +1,5 @@
 
-import { Client } from 'ssh2';
+import { Client, ClientChannel } from 'ssh2';
 
 export interface SSHConfig {
     host: string;
@@ -27,7 +27,7 @@ export class SSHClient {
             let stderr = '';
 
             conn.on('ready', () => {
-                conn.exec(command, (err, stream) => {
+                conn.exec(command, (err: Error | undefined, stream: ClientChannel) => {
                     if (err) {
                         conn.end();
                         return reject(err);

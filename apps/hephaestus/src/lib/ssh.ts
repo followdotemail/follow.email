@@ -1,5 +1,9 @@
 
+<<<<<<< HEAD
 import { Client, ClientChannel } from 'ssh2';
+=======
+import { Client } from 'ssh2';
+>>>>>>> main
 
 export interface SSHConfig {
     host: string;
@@ -27,7 +31,11 @@ export class SSHClient {
             let stderr = '';
 
             conn.on('ready', () => {
+<<<<<<< HEAD
                 conn.exec(command, (err: Error | undefined, stream: ClientChannel) => {
+=======
+                conn.exec(command, (err, stream) => {
+>>>>>>> main
                     if (err) {
                         conn.end();
                         return reject(err);

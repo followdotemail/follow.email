@@ -218,17 +218,40 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 		return
 	}
 
+	// Default to incremental sync if not specified
+	syncType := req.SyncType
+	if syncType == "" {
+		syncType = "incremental"
+	}
+
 	// Queue the email sync job using QStash
 	syncMessage := queue.EmailSyncMessage{
 		UserID:    userID.String(),
 		MessageID: "", // Optional message ID for incremental sync
-		SyncType:  req.SyncType,
+		SyncType:  syncType,
 	}
 
 	err = h.qstashService.PublishEmailSync(c.Request.Context(), syncMessage)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue email sync: " + err.Error()})
 		return
+	}
+
+	// Calculate estimated time
+	estimatedTime := "1-2 minutes"
+	if syncType == "full" {
+		estimatedTime = "3-5 minutes"
+	} else {
+		// For incremental sync, check last sync time
+		var consent models.GmailConsent
+		if err := h.db.Select("last_gmail_sync_at").Where("user_id = ?", userID).First(&consent).Error; err == nil && consent.LastGmailSyncAt != nil {
+			timeSinceLastSync := time.Since(*consent.LastGmailSyncAt)
+			if timeSinceLastSync < time.Hour {
+				estimatedTime = "Less than 10 seconds"
+			} else if timeSinceLastSync < 24*time.Hour {
+				estimatedTime = "10-30 seconds"
+			}
+		}
 	}
 
 	// Generate a job ID for tracking
@@ -239,7 +262,7 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 		"job_id":         jobID,
 		"provider":       req.Provider,
 		"user_id":        userID,
-		"estimated_time": "5-10 minutes",
+		"estimated_time": estimatedTime,
 		"status":         "queued",
 	})
 }

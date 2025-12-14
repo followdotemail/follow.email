@@ -101,7 +101,35 @@ export const ExcloudAPI = {
             }
         });
         return response.data;
-    }
+    },
+
+    async getProvisioningHistory(options?: { states?: string[], created_after?: string, created_before?: string }) {
+        if (!EXCLOUD_API_KEY) throw new Error('EXCLOUD_API_KEY is not set');
+
+        let url = `${EXCLOUD_BASE_URL}/compute/instances?zone_id=1`;
+
+        if (options?.states && options.states.length > 0) {
+            url += `&states=${options.states.join(',')}`;
+        }
+
+        if (options?.created_after) {
+            url += `&created_after=${options.created_after}`;
+        }
+
+        if (options?.created_before) {
+            url += `&created_before=${options.created_before}`;
+        }
+
+        // Can throw error, caller should handle it to detect status codes
+        const response = await axios.get(url, {
+            httpsAgent: agent,
+            headers: {
+                'Authorization': `Bearer ${EXCLOUD_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        return response.data;
+    },
 };
 
 export const SpaceshipAPI = {

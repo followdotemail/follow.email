@@ -8,7 +8,11 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Terminal } from './terminal';
-import { Loader2, CheckCircle2, XCircle, Plus, Key, RefreshCw, Trash2 } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Plus, Key, RefreshCw, Trash2, AlertTriangle, History, ChevronLeft, ChevronRight, Filter, Calendar as CalendarIcon } from 'lucide-react';
+import { format, subDays } from 'date-fns';
+import { Badge } from '@/components/ui/badge';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import {
     Select,
@@ -63,6 +67,26 @@ export function ProvisioningOrchestrator() {
     const [newKey, setNewKey] = useState({ name: '', private: '', public: '' });
     const [isSavingKey, setIsSavingKey] = useState(false);
 
+    // History Tab State
+    const [historyItems, setHistoryItems] = useState<any[]>([]);
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+    const [historyError, setHistoryError] = useState<{ title: string; message: string } | null>(null);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(20);
+
+    // Filters State
+    const [filterStates, setFilterStates] = useState<string[]>([]);
+    const [dateRangeType, setDateRangeType] = useState<string>('7d');
+    const [customDateRange, setCustomDateRange] = useState<{ from: Date | undefined; to: Date | undefined }>({ from: undefined, to: undefined });
+    const [isCustomDateOpen, setIsCustomDateOpen] = useState(false);
+
+    const indexOfLastItem = currentPage * itemsPerPage;
+    const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+    const currentItems = historyItems.slice(indexOfFirstItem, indexOfLastItem);
+    const totalPages = Math.ceil(historyItems.length / itemsPerPage);
+
+    const paginate = (pageNumber: number) => setCurrentPage(pageNumber);
+
     // Execution State
     const [isProvisioning, setIsProvisioning] = useState(false);
     const [currentStep, setCurrentStep] = useState(0);
@@ -76,7 +100,89 @@ export function ProvisioningOrchestrator() {
     useEffect(() => {
         fetchKeys();
         fetchInstances();
+        // fetchHistory is now triggered by the filter useEffect
     }, []);
+
+    useEffect(() => {
+        fetchHistory();
+    }, [filterStates, dateRangeType, customDateRange]);
+
+    const fetchHistory = async () => {
+        setIsLoadingHistory(true);
+        setHistoryError(null);
+        try {
+            const params = new URLSearchParams();
+
+            filterStates.forEach(s => params.append('states', s));
+
+            let after: Date | undefined;
+            let before: Date | undefined;
+            const now = new Date();
+
+            if (dateRangeType === '1d') after = subDays(now, 1);
+            else if (dateRangeType === '7d') after = subDays(now, 7);
+            else if (dateRangeType === '30d') after = subDays(now, 30);
+            else if (dateRangeType === 'custom' && customDateRange.from) {
+                after = customDateRange.from;
+                before = customDateRange.to;
+            }
+
+            if (after) params.append('created_after', after.toISOString());
+            if (before) params.append('created_before', before.toISOString());
+
+            const res = await axios.get(`/api/provision/history?${params.toString()}`);
+            if (res.data) {
+                // Handle different response structures if necessary, often it's directly an array or inside .items
+                // Based on previous code it seemed to be res.data directly or res.data.items
+                // Let's assume res.data is the array based on previous listInstances, 
+                // but getProvisioningHistory implementation returns response.data directly.
+                // Depending on the API, it might be an array.
+                const items = Array.isArray(res.data) ? res.data : (res.data.items || []);
+
+                // Sort by created_at descending
+                items.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+                setHistoryItems(items);
+            }
+        } catch (e: any) {
+            console.error("Failed to fetch history", e);
+            const status = e.response?.status;
+
+            if (status === 400) {
+                setHistoryError({
+                    title: "400 - Bad Request",
+                    message: "Could not parse your request!!\nAre you sure you passed the correct flags? If this is happens frequently please contact support@excloud.in"
+                });
+            } else if (status === 401) {
+                setHistoryError({
+                    title: "401 - Unauthorized",
+                    message: "Invalid/Expired access token. Are you sure you ran exc login?"
+                });
+            } else if (status === 403) {
+                setHistoryError({
+                    title: "403 - Forbidden",
+                    message: "You are not authorized to access this resource. Ask your org admin to grant you access.\nIf this is happens frequently please contact support@excloud.in"
+                });
+            } else if (status === 429) {
+                setHistoryError({
+                    title: "429 - Too Many Requests",
+                    message: "Too many requests. Please try after sometime.\nIf this is happens frequently please contact support@excloud.in"
+                });
+            } else if (status === 500) {
+                setHistoryError({
+                    title: "500 - Internal Server Error",
+                    message: "Something went wrong on our end!!\nIf this is happens frequently please contact support@excloud.in"
+                });
+            } else {
+                setHistoryError({
+                    title: "Error",
+                    message: e.response?.data?.error || e.message || "An unknown error occurred."
+                });
+            }
+        } finally {
+            setIsLoadingHistory(false);
+        }
+    };
 
     const fetchInstances = async () => {
         setIsLoadingInstances(true);
@@ -374,9 +480,216 @@ export function ProvisioningOrchestrator() {
                             >
                                 Provision
                             </TabsTrigger>
+                            <TabsTrigger
+                                value="history"
+                                className="rounded-none border-b-2 border-transparent data-[state=active]:border-white data-[state=active]:bg-transparent px-1 py-2 text-zinc-400 data-[state=active]:text-white h-full transition-none data-[state=active]:shadow-none"
+                            >
+                                History
+                            </TabsTrigger>
                         </TabsList>
                     </div>
 
+                    <TabsContent value="history" className="flex-1 overflow-auto p-0 m-0 data-[state=inactive]:hidden outline-none bg-black">
+                        <div className="p-6">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {/* State Filter */}
+                                    <Popover>
+                                        <PopoverTrigger asChild>
+                                            <Button variant="outline" size="sm" className="bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-zinc-300 border-dashed">
+                                                <Filter className="w-3 h-3 mr-2" />
+                                                Status
+                                                {filterStates.length > 0 && (
+                                                    <Badge variant="secondary" className="ml-2 h-5 rounded-sm px-1 font-normal bg-zinc-800 text-zinc-300">
+                                                        {filterStates.length}
+                                                    </Badge>
+                                                )}
+                                            </Button>
+                                        </PopoverTrigger>
+                                        <PopoverContent className="w-[200px] p-0 bg-zinc-950 border-zinc-800" align="start">
+                                            <div className="p-2 space-y-1">
+                                                {['TERMINATED', 'TERMINATING', 'CREATING', 'RUNNING'].map(status => (
+                                                    <div key={status} className="flex items-center space-x-2 p-2 hover:bg-zinc-900 rounded-md cursor-pointer"
+                                                        onClick={() => {
+                                                            setFilterStates(prev =>
+                                                                prev.includes(status)
+                                                                    ? prev.filter(s => s !== status)
+                                                                    : [...prev, status]
+                                                            );
+                                                        }}
+                                                    >
+                                                        <div className={cn(
+                                                            "w-4 h-4 rounded-sm border border-zinc-700 flex items-center justify-center",
+                                                            filterStates.includes(status) ? "bg-primary border-primary" : "bg-transparent"
+                                                        )}>
+                                                            {filterStates.includes(status) && <CheckCircle2 className="w-3 h-3 text-black" />}
+                                                        </div>
+                                                        <span className="text-sm text-zinc-300">{status}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </PopoverContent>
+                                    </Popover>
+
+                                    {/* Date Range Filter */}
+                                    <Select value={dateRangeType} onValueChange={(val) => {
+                                        setDateRangeType(val);
+                                    }}>
+                                        <SelectTrigger className="h-9 w-[150px] bg-zinc-900 border-zinc-800 text-zinc-300 border-dashed">
+                                            <CalendarIcon className="w-3 h-3 mr-2 opacity-50" />
+                                            <SelectValue placeholder="Period" />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-zinc-950 border-zinc-800">
+                                            <SelectItem value="1d" className="text-zinc-300 focus:bg-zinc-900">Last 24 Hours</SelectItem>
+                                            <SelectItem value="7d" className="text-zinc-300 focus:bg-zinc-900">Last 7 Days</SelectItem>
+                                            <SelectItem value="30d" className="text-zinc-300 focus:bg-zinc-900">Last 30 Days</SelectItem>
+                                            <SelectItem value="custom" className="text-zinc-300 focus:bg-zinc-900">Custom Range...</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+
+                                    {/* Custom Date Info Display */}
+                                    {dateRangeType === 'custom' && (
+                                        <Popover open={isCustomDateOpen} onOpenChange={setIsCustomDateOpen}>
+                                            <PopoverTrigger asChild>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="text-zinc-400 hover:text-zinc-200 text-xs border border-dashed border-zinc-800 ml-2"
+                                                    onMouseEnter={() => setIsCustomDateOpen(true)}
+                                                >
+                                                    {customDateRange.from ? (
+                                                        <>
+                                                            {format(customDateRange.from, "LLL dd, y")} - {customDateRange.to ? format(customDateRange.to, "LLL dd, y") : "..."}
+                                                        </>
+                                                    ) : (
+                                                        <span>Pick a date range</span>
+                                                    )}
+                                                </Button>
+                                            </PopoverTrigger>
+                                            <PopoverContent className="w-auto p-0 bg-zinc-950 border-zinc-800" align="start">
+                                                <Calendar
+                                                    mode="range"
+                                                    defaultMonth={customDateRange.from}
+                                                    selected={customDateRange}
+                                                    onSelect={(range) => setCustomDateRange({ from: range?.from, to: range?.to })}
+                                                    numberOfMonths={2}
+                                                    className="bg-zinc-950 text-zinc-300 border-none"
+                                                />
+                                            </PopoverContent>
+                                        </Popover>
+                                    )}
+                                </div>
+
+                                <Button variant="outline" size="sm" onClick={() => fetchHistory()} className="bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-zinc-300">
+                                    <RefreshCw className={cn("w-3 h-3 mr-2", isLoadingHistory && "animate-spin")} />
+                                    Refresh
+                                </Button>
+                            </div>
+
+                            {historyError ? (
+                                <div className="p-4 border border-red-500/20 bg-red-500/10 rounded-md text-red-500 flex flex-col items-center justify-center text-center space-y-2 h-[300px]">
+                                    <AlertTriangle className="w-10 h-10 mb-2" />
+                                    <h3 className="font-semibold text-lg">{historyError.title}</h3>
+                                    <p className="text-sm opacity-90 whitespace-pre-wrap max-w-md">{historyError.message}</p>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="border border-zinc-800 rounded-md bg-zinc-950/30">
+                                        <Table>
+                                            <TableHeader>
+                                                <TableRow className="border-zinc-800 hover:bg-transparent">
+                                                    <TableHead className="text-zinc-500">Instance Name</TableHead>
+                                                    <TableHead className="text-zinc-500">Type</TableHead>
+                                                    <TableHead className="text-zinc-500">Image</TableHead>
+                                                    <TableHead className="text-zinc-500">IP Address</TableHead>
+                                                    <TableHead className="text-zinc-500">State</TableHead>
+                                                    <TableHead className="text-zinc-500">Created At</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {isLoadingHistory && historyItems.length === 0 ? (
+                                                    <TableRow className="border-zinc-800 hover:bg-transparent">
+                                                        <TableCell colSpan={6} className="text-center py-8 text-zinc-500">Loading history...</TableCell>
+                                                    </TableRow>
+                                                ) : historyItems.length === 0 ? (
+                                                    <TableRow className="border-zinc-800 hover:bg-transparent">
+                                                        <TableCell colSpan={6} className="text-center py-8 text-zinc-500">No provisioning history found.</TableCell>
+                                                    </TableRow>
+                                                ) : (
+                                                    currentItems.map((item, i) => (
+                                                        <TableRow key={i} className="border-zinc-800 hover:bg-zinc-900/50">
+                                                            <TableCell className="font-medium text-zinc-200">{item.name}</TableCell>
+                                                            <TableCell className="text-zinc-400">{item.instance_type}</TableCell>
+                                                            <TableCell className="text-zinc-400">{item.image_name}</TableCell>
+                                                            <TableCell className="font-mono text-zinc-400">{item.public_ipv4}</TableCell>
+                                                            <TableCell>
+                                                                <div className={cn(
+                                                                    "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border uppercase",
+                                                                    item.state?.toLowerCase() === 'running' && "bg-green-500/10 text-green-500 border-green-500/20",
+                                                                    item.state?.toLowerCase() !== 'running' && "bg-zinc-500/10 text-zinc-500 border-zinc-500/20"
+                                                                )}>
+                                                                    {item.state}
+                                                                </div>
+                                                            </TableCell>
+                                                            <TableCell className="text-zinc-500 text-xs">
+                                                                {new Date(item.created_at).toLocaleString()}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))
+                                                )}
+                                            </TableBody>
+                                        </Table>
+                                    </div>
+                                    <div className="flex items-center justify-between mt-4">
+                                        <div className="flex items-center space-x-2">
+                                            <p className="text-sm text-zinc-500">
+                                                Page {currentPage} of {Math.max(1, totalPages)}
+                                            </p>
+                                            <Select
+                                                value={itemsPerPage.toString()}
+                                                onValueChange={(val) => {
+                                                    setItemsPerPage(Number(val));
+                                                    setCurrentPage(1);
+                                                }}
+                                            >
+                                                <SelectTrigger className="h-8 w-[70px] bg-zinc-900 border-zinc-800 text-zinc-300">
+                                                    <SelectValue placeholder={itemsPerPage.toString()} />
+                                                </SelectTrigger>
+                                                <SelectContent className="bg-zinc-950 border-zinc-800">
+                                                    {[20, 40, 50, 100].map(pageSize => (
+                                                        <SelectItem key={pageSize} value={pageSize.toString()} className="text-zinc-300 focus:bg-zinc-900 cursor-pointer">
+                                                            {pageSize}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                            <p className="text-sm text-zinc-500">rows per page</p>
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => paginate(currentPage - 1)}
+                                                disabled={currentPage === 1}
+                                                className="bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-zinc-300 h-8 w-8 p-0"
+                                            >
+                                                <ChevronLeft className="h-4 w-4" />
+                                            </Button>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => paginate(currentPage + 1)}
+                                                disabled={currentPage === totalPages || totalPages === 0}
+                                                className="bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-zinc-300 h-8 w-8 p-0"
+                                            >
+                                                <ChevronRight className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </TabsContent>
                     <TabsContent value="instances" className="flex-1 overflow-auto p-0 m-0 data-[state=inactive]:hidden outline-none bg-black">
                         <div className="p-6">
                             <div className="flex justify-end mb-4">
@@ -632,6 +945,6 @@ export function ProvisioningOrchestrator() {
                     </TabsContent>
                 </Tabs>
             </div>
-        </div>
+        </div >
     );
 }

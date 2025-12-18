@@ -25,6 +25,7 @@ type Email struct {
 	// Email content storage references
 	S3BodyKey        string `json:"s3_body_key"`
 	S3AttachmentsKey string `json:"s3_attachments_key"`
+	BodySnippet      string `json:"body_snippet" gorm:"type:text"` // First ~2KB of plain text body for search
 
 	// Email metadata
 	IsRead         bool   `json:"is_read" gorm:"default:false"`
@@ -52,6 +53,11 @@ type Email struct {
 	ProviderSyncID string    `json:"provider_sync_id"`
 	LastSyncAt     time.Time `json:"last_sync_at"`
 	SyncVersion    int       `json:"sync_version" gorm:"default:0"`
+
+	// Email security/authentication info (extracted from headers)
+	MailedBy     string `json:"mailed_by" gorm:"type:varchar(255)"`     // Sending service domain (e.g., amazonses.com)
+	SignedBy     string `json:"signed_by" gorm:"type:varchar(255)"`     // DKIM signer domain (e.g., swiggy.in)
+	SecurityInfo string `json:"security_info" gorm:"type:varchar(100)"` // Encryption type (e.g., Standard encryption (TLS))
 }
 
 type FollowUpTemplate struct {

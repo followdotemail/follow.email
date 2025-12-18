@@ -742,6 +742,9 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 
 	debug.DebugTextPrint(fmt.Sprintf("Email %s - Final userLabelIDs: %v (JSON: %s)", message.Id, userLabelIDs, gmailpkg.ToJson(userLabelIDs)))
 
+	// Extract email security/authentication info from headers
+	mailedBy, signedBy, securityInfo := extractSecurityInfo(headers)
+
 	return &models.Email{
 		UserID:         userID,
 		MessageID:      message.Id,
@@ -755,13 +758,17 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 		SentAt:         sentAt,
 		ReceivedAt:     sentAt,
 		EmailSize:      int64(message.SizeEstimate),
-		S3BodyKey:      "", // Will be set when storing body in S3
+		S3BodyKey:      "",              // Will be set when storing body in S3
+		BodySnippet:    message.Snippet, // Gmail API provides a snippet of the email body
 		HasAttachments: len(message.Payload.Parts) > 1,
 		Category:       parsedLabels.Category,
 		SystemLabels:   gmailpkg.ToJson(parsedLabels.SystemLabels),
 		UserLabelIDs:   gmailpkg.ToJson(userLabelIDs),
 		LastSyncAt:     time.Now(),
 		SyncVersion:    syncVersion,
+		MailedBy:       mailedBy,
+		SignedBy:       signedBy,
+		SecurityInfo:   securityInfo,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -775,6 +782,102 @@ func (s *GmailSyncService) extractEmailContent(payload *gmail.MessagePart) Email
 	}
 
 	return EmailBodyContent{HTML: decodeBodyDataToHTML(payload.Body.Data, payload.MimeType), MimeType: payload.MimeType}
+}
+
+// extractSecurityInfo extracts email security/authentication info from headers
+// Returns: mailedBy, signedBy, securityInfo
+func extractSecurityInfo(headers map[string]string) (string, string, string) {
+	var mailedBy, signedBy, securityInfo string
+
+	// Parse Authentication-Results header for DKIM and SPF info
+	// Example: "mx.google.com; dkim=pass header.i=@swiggy.in; spf=pass ... designates 23.251.234.123"
+	if authResults, exists := headers["authentication-results"]; exists {
+		authResults = strings.ToLower(authResults)
+
+		// Extract signed-by from dkim=pass header.i=@domain or header.d=domain
+		if strings.Contains(authResults, "dkim=pass") {
+			// Look for header.i=@domain or header.d=domain
+			for _, pattern := range []string{"header.i=@", "header.d="} {
+				if idx := strings.Index(authResults, pattern); idx != -1 {
+					start := idx + len(pattern)
+					end := start
+					for end < len(authResults) && authResults[end] != ' ' && authResults[end] != ';' {
+						end++
+					}
+					if end > start {
+						signedBy = authResults[start:end]
+						break
+					}
+				}
+			}
+		}
+
+		// Extract mailed-by from SPF designates domain
+		if strings.Contains(authResults, "spf=pass") {
+			// Look for "designates X.X.X.X as permitted sender" or domain info
+			if idx := strings.Index(authResults, "domain of "); idx != -1 {
+				start := idx + len("domain of ")
+				end := start
+				for end < len(authResults) && authResults[end] != ' ' && authResults[end] != ';' {
+					end++
+				}
+				if end > start {
+					domain := authResults[start:end]
+					// Extract domain after @ if present
+					if atIdx := strings.LastIndex(domain, "@"); atIdx != -1 {
+						mailedBy = domain[atIdx+1:]
+					}
+				}
+			}
+		}
+	}
+
+	// Alternative: Check Received-SPF header
+	if mailedBy == "" {
+		if receivedSPF, exists := headers["received-spf"]; exists {
+			receivedSPF = strings.ToLower(receivedSPF)
+			// Look for client-ip or domain info
+			if strings.Contains(receivedSPF, "pass") {
+				if idx := strings.Index(receivedSPF, "domain of "); idx != -1 {
+					start := idx + len("domain of ")
+					end := start
+					for end < len(receivedSPF) && receivedSPF[end] != ' ' && receivedSPF[end] != ')' {
+						end++
+					}
+					if end > start {
+						domain := receivedSPF[start:end]
+						if atIdx := strings.LastIndex(domain, "@"); atIdx != -1 {
+							mailedBy = domain[atIdx+1:]
+						} else {
+							mailedBy = domain
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Parse Received header for TLS info
+	// Example: "from mail-pj1... (TLS version=TLS1_3 cipher=TLS_AES_256_GCM...)"
+	if received, exists := headers["received"]; exists {
+		received = strings.ToLower(received)
+		if strings.Contains(received, "tls") {
+			if strings.Contains(received, "tls1_3") || strings.Contains(received, "tls 1.3") {
+				securityInfo = "Standard encryption (TLS 1.3)"
+			} else if strings.Contains(received, "tls1_2") || strings.Contains(received, "tls 1.2") {
+				securityInfo = "Standard encryption (TLS 1.2)"
+			} else {
+				securityInfo = "Standard encryption (TLS)"
+			}
+		}
+	}
+
+	// Default security info if we found any encryption indication
+	if securityInfo == "" && (mailedBy != "" || signedBy != "") {
+		securityInfo = "Standard encryption (TLS)"
+	}
+
+	return mailedBy, signedBy, securityInfo
 }
 
 // decodeBodyData converts Gmail's base64url body data into HTML and plain-text variants.

@@ -50,6 +50,7 @@ import (
 	"follow-email-backend/internal/routes"
 	"follow-email-backend/internal/services"
 	"follow-email-backend/pkg/ai"
+	"follow-email-backend/pkg/cache"
 	"follow-email-backend/pkg/debug"
 	"follow-email-backend/pkg/encryption"
 	"follow-email-backend/pkg/oauth"
@@ -171,9 +172,24 @@ func main() {
 	// Initialize label service
 	labelService := services.NewLabelService(db, gmailOAuthService, gmailTokenService)
 
+	// Initialize cache service (for ETag caching)
+	var cacheService *cache.CacheService
+	if cfg.RedisURL != "" {
+		var err error
+		cacheService, err = cache.NewCacheService(cfg.RedisURL)
+		if err != nil {
+			debug.DebugWarningTextPrint(fmt.Sprintf("Warning: Failed to initialize Redis cache: %v", err))
+			// Continue without cache - graceful degradation
+		} else {
+			debug.DebugSuccessTextPrint("Redis cache service initialized successfully")
+		}
+	} else {
+		debug.DebugTextPrint("Redis URL not configured - ETag caching disabled")
+	}
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(cfg, db)
-	emailHandler := handlers.NewEmailHandler(db, emailSyncService, aiService, qstashService, storageService, gmailTokenService, gmailSyncService)
+	emailHandler := handlers.NewEmailHandler(db, emailSyncService, aiService, qstashService, storageService, gmailTokenService, gmailSyncService, cacheService)
 	labelHandler := handlers.NewLabelHandler(db, labelService)
 	privacyHandler := handlers.NewPrivacyHandler(privacyService)
 	gmailConsentHandler := handlers.NewGmailConsentHandler(cfg, db, gmailOAuthService, qstashService)

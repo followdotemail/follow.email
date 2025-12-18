@@ -53,6 +53,7 @@ func SetupProtectedRoutes(
 		ai.POST("/analyze", emailHandler.AnalyzeEmail)
 		ai.POST("/generate-response", emailHandler.GenerateResponse)
 		ai.POST("/:emailId/follow-up", emailHandler.ScheduleFollowUp)
+		ai.POST("/smart-search", emailHandler.SmartSearch) // AI-powered natural language search
 	}
 
 	// ADD: Label management endpoints

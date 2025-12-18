@@ -1,7 +1,8 @@
 package handlers
 
 import (
-	// "encoding/json"
+	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -15,6 +16,8 @@ import (
 	"follow-email-backend/internal/queue"
 	"follow-email-backend/internal/services"
 	"follow-email-backend/pkg/ai"
+	"follow-email-backend/pkg/cache"
+	"follow-email-backend/pkg/debug"
 	emailutils "follow-email-backend/pkg/email"
 	"follow-email-backend/pkg/oauth"
 	"follow-email-backend/pkg/storage"
@@ -34,6 +37,7 @@ type EmailHandler struct {
 	storageService    *storage.S3Service
 	gmailTokenService *services.GmailTokenService
 	gmailSyncService  *services.GmailSyncService
+	cacheService      *cache.CacheService
 }
 
 // NEED TO CHECK THIS CODE MANUALLY
@@ -46,6 +50,7 @@ func NewEmailHandler(
 	storageService *storage.S3Service,
 	gmailTokenService *services.GmailTokenService,
 	gmailSyncService *services.GmailSyncService,
+	cacheService *cache.CacheService,
 ) *EmailHandler {
 	return &EmailHandler{
 		db:                db,
@@ -55,6 +60,7 @@ func NewEmailHandler(
 		storageService:    storageService,
 		gmailTokenService: gmailTokenService,
 		gmailSyncService:  gmailSyncService,
+		cacheService:      cacheService,
 	}
 }
 
@@ -449,6 +455,7 @@ type EmailQueryRequest struct {
 	Page             int        `form:"page" json:"page"`
 	Limit            int        `form:"limit" json:"limit"`
 	FromEmail        string     `form:"from_email" json:"from_email"`
+	ToEmail          string     `form:"to_email" json:"to_email"` // Search in to_emails field
 	Subject          string     `form:"subject" json:"subject"`
 	StartDate        *time.Time `form:"start_date" json:"start_date"`
 	EndDate          *time.Time `form:"end_date" json:"end_date"`
@@ -466,6 +473,10 @@ type EmailQueryRequest struct {
 	SystemLabel string `form:"system_label" json:"system_label"`   // Filter by system label (e.g., "INBOX", "SENT", "STARRED")
 	UserLabelID *int   `form:"user_label_id" json:"user_label_id"` // Filter by user label ID (optional)
 	NoDefaults  *bool  `form:"no_defaults" json:"no_defaults"`     // If true, skip default category/system_label filters
+	// Search filters (new)
+	Q            string `form:"q" json:"q"`                         // General search using PostgreSQL FTS (searches subject, from, body)
+	BodyContains string `form:"body_contains" json:"body_contains"` // Search in body_snippet using ILIKE
+	SubjectExact *bool  `form:"subject_exact" json:"subject_exact"` // If true, subject uses exact match instead of partial
 }
 
 // FilteredEmail represents a filtered email response with only required fields
@@ -480,7 +491,7 @@ type FilteredEmail struct {
 	ToEmails       string     `json:"to_emails"`
 	CCEmails       string     `json:"cc_emails"`
 	BCCEmails      string     `json:"bcc_emails"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ReceivedAt     time.Time  `json:"received_at"`
 	IsRead         bool       `json:"is_read"`
 	IsImportant    bool       `json:"is_important"`
 	HasAttachments bool       `json:"has_attachments"`
@@ -518,6 +529,10 @@ type EmailDetailMetadata struct {
 	FollowUpStatus   string     `json:"followup_status"`
 	LastFollowUpAt   *time.Time `json:"last_followup_at"`
 	FollowUpCount    int        `json:"followup_count"`
+	// Email security/authentication info
+	MailedBy     string `json:"mailed_by"`
+	SignedBy     string `json:"signed_by"`
+	SecurityInfo string `json:"security_info"`
 }
 
 // EmailAttachmentResponse represents attachment metadata returned to clients
@@ -621,7 +636,11 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 		query = query.Where("from_email ILIKE ?", "%"+req.FromEmail+"%")
 	}
 	if req.Subject != "" {
-		query = query.Where("subject ILIKE ?", "%"+req.Subject+"%")
+		if req.SubjectExact != nil && *req.SubjectExact {
+			query = query.Where("subject = ?", req.Subject)
+		} else {
+			query = query.Where("subject ILIKE ?", "%"+req.Subject+"%")
+		}
 	}
 	if req.StartDate != nil {
 		query = query.Where("received_at >= ?", *req.StartDate)
@@ -651,28 +670,45 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 		query = query.Where("followup_status = ?", req.FollowUpStatus)
 	}
 
+	// Search filters (new)
+	// General search using PostgreSQL Full-Text Search
+	if req.Q != "" {
+		// Use plainto_tsquery for simpler user input (no need for special syntax)
+		query = query.Where("search_vector @@ plainto_tsquery('english', ?)", req.Q)
+	}
+	// Body contains (uses ILIKE on body_snippet)
+	if req.BodyContains != "" {
+		query = query.Where("body_snippet ILIKE ?", "%"+req.BodyContains+"%")
+	}
+	// To email search
+	if req.ToEmail != "" {
+		query = query.Where("to_emails ILIKE ?", "%"+req.ToEmail+"%")
+	}
+
 	// Apply category and label filters
 	// Check if we should apply default filters (skip if no_defaults=true)
 	applyDefaults := req.NoDefaults == nil || !*req.NoDefaults
 
-	// Category filter (default: "personal")
+	// Check if user is performing a search (any search filter is active)
+	isSearching := req.Q != "" || req.BodyContains != "" || (req.Subject != "" && req.SubjectExact == nil)
+
+	// Category filter
+	// When searching: don't apply default category filter (search all categories)
+	// When browsing: apply default "personal" category
 	if req.Category != "" {
 		query = query.Where("category = ?", req.Category)
-	} else if applyDefaults {
+	} else if applyDefaults && !isSearching {
 		query = query.Where("category = ?", "personal")
 	}
 
 	// System label filter
-	// Default: filter by INBOX, IMPORTANT, or UNREAD (emails that appear in these)
+	// Always exclude TRASH, ARCHIVED, DRAFT, SENT (unless explicitly filtered)
 	if req.SystemLabel != "" {
 		// Filter by specific system label - check if system_labels JSONB contains the label
 		query = query.Where("system_labels @> ?", fmt.Sprintf(`["%s"]`, req.SystemLabel))
-	} else if applyDefaults {
-		// Default: show emails that have INBOX, IMPORTANT, or UNREAD in system_labels
-		query = query.Where(`
-			system_labels @> '["INBOX"]' 
-			AND NOT (system_labels ?| array['TRASH', 'SPAM', 'ARCHIVED', 'DRAFT', 'SENT', 'CHAT'])
-		`)
+	} else {
+		// Default: exclude emails from TRASH, ARCHIVED, DRAFT, SENT, SPAM, CHAT
+		query = query.Where(`NOT (system_labels ?| array['TRASH', 'SPAM', 'ARCHIVED', 'DRAFT', 'SENT', 'CHAT'])`)
 	}
 
 	// User label filter (optional, no default)
@@ -725,7 +761,7 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 			ToEmails:       email.ToEmails,
 			CCEmails:       email.CcEmails,
 			BCCEmails:      email.BccEmails,
-			UpdatedAt:      email.UpdatedAt,
+			ReceivedAt:     email.ReceivedAt,
 			IsRead:         email.IsRead,
 			IsImportant:    email.IsImportant,
 			HasAttachments: email.HasAttachments,
@@ -759,6 +795,46 @@ func (h *EmailHandler) GetEmails(c *gin.Context) {
 		},
 		UserLabels: userLabels,
 	}
+
+	// Generate ETag from: userID + lastGmailSyncAt + filters
+	var gmailConsent models.GmailConsent
+	var lastSyncTime string
+	if err := h.db.Select("last_gmail_sync_at").Where("user_id = ?", userID).First(&gmailConsent).Error; err == nil && gmailConsent.LastGmailSyncAt != nil {
+		lastSyncTime = gmailConsent.LastGmailSyncAt.Format(time.RFC3339)
+	}
+
+	// Serialize request filters for ETag
+	filterData, _ := json.Marshal(req)
+	filterHash := fmt.Sprintf("%x", md5.Sum(filterData))
+	etagSource := fmt.Sprintf("%s|%s|%s", userID.String(), lastSyncTime, filterHash)
+	etagHash := md5.Sum([]byte(etagSource))
+	etag := fmt.Sprintf(`"%x"`, etagHash)
+
+	// Generate cache key for Redis
+	cacheKey := cache.GenerateETagKey(userID.String(), filterHash)
+
+	// Try to get cached ETag from Redis
+	if h.cacheService != nil {
+		cachedETag, _ := h.cacheService.GetETag(c.Request.Context(), cacheKey)
+		// Check If-None-Match against cached ETag (if available) or computed ETag
+		clientETag := c.GetHeader("If-None-Match")
+		if clientETag != "" && (clientETag == cachedETag || clientETag == etag) {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		// Store new ETag in Redis (1 hour TTL)
+		_ = h.cacheService.SetETag(c.Request.Context(), cacheKey, etag, time.Hour)
+	} else {
+		// No Redis - fallback to direct comparison
+		if c.GetHeader("If-None-Match") == etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+	}
+
+	// Set cache headers
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, must-revalidate")
 
 	c.JSON(http.StatusOK, response)
 }
@@ -1172,4 +1248,221 @@ func isValidGmailThreadIDFormat(threadID string) bool {
 	}
 
 	return true
+}
+
+// SmartSearchRequest represents the request body for smart search
+type SmartSearchRequest struct {
+	Query string `json:"query" binding:"required"`
+	Page  int    `json:"page"`
+	Limit int    `json:"limit"`
+}
+
+// SmartSearchResponse represents the response for smart search
+type SmartSearchResponse struct {
+	Emails         []FilteredEmail   `json:"emails"`
+	Pagination     PaginationInfo    `json:"pagination"`
+	AppliedFilters *ai.SearchFilters `json:"applied_filters"`
+	RawQuery       string            `json:"raw_query"`
+}
+
+// SmartSearch handles AI-powered natural language email search
+func (h *EmailHandler) SmartSearch(c *gin.Context) {
+	debug.DebugTextPrint("[SmartSearch] Handler started")
+	startTime := time.Now()
+
+	clerkID, exists := c.Get("user_id")
+	if !exists {
+		debug.DebugWarningTextPrint("[SmartSearch] User not authenticated - no user_id in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Clerk ID: %s", clerkID.(string)))
+
+	// Convert Clerk ID to database UUID
+	debug.DebugTextPrint("[SmartSearch] Looking up user UUID from Clerk ID...")
+	userIDStart := time.Now()
+	userID, err := h.getUserUUIDFromClerkID(clerkID.(string))
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] User lookup took: %v", time.Since(userIDStart)))
+	if err != nil {
+		debug.DebugWarningTextPrint(fmt.Sprintf("[SmartSearch] User lookup failed: %v", err))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] User UUID: %s", userID.String()))
+
+	var req SmartSearchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		debug.DebugWarningTextPrint(fmt.Sprintf("[SmartSearch] Invalid request body: %v", err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Query: %q, Page: %d, Limit: %d", req.Query, req.Page, req.Limit))
+
+	// Set defaults
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+	if req.Limit <= 0 {
+		req.Limit = 20
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+
+	// Parse the natural language query using AI
+	debug.DebugTextPrint("[SmartSearch] Parsing query with AI service...")
+	aiStart := time.Now()
+	filters, err := h.aiService.ParseSearchQuery(c.Request.Context(), req.Query)
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] AI parsing took: %v", time.Since(aiStart)))
+	if err != nil {
+		debug.DebugWarningTextPrint(fmt.Sprintf("[SmartSearch] AI parsing failed: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse search query: " + err.Error()})
+		return
+	}
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] AI extracted filters: %+v", filters))
+
+	// Build the query using the extracted filters
+	query := h.db.Where("user_id = ?", userID)
+
+	// Apply filters from AI
+	if filters.FromEmail != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying from_email filter: %s", filters.FromEmail))
+		query = query.Where("from_email ILIKE ? OR from_name ILIKE ?", "%"+filters.FromEmail+"%", "%"+filters.FromEmail+"%")
+	}
+	if filters.ToEmail != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying to_email filter: %s", filters.ToEmail))
+		query = query.Where("to_emails ILIKE ?", "%"+filters.ToEmail+"%")
+	}
+	if filters.Subject != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying subject filter: %s", filters.Subject))
+		query = query.Where("subject ILIKE ?", "%"+filters.Subject+"%")
+	}
+	if filters.BodyContains != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying body_contains filter: %s", filters.BodyContains))
+		query = query.Where("body_snippet ILIKE ?", "%"+filters.BodyContains+"%")
+	}
+	if filters.StartDate != "" {
+		if startDate, err := time.Parse("2006-01-02", filters.StartDate); err == nil {
+			debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying start_date filter: %s", filters.StartDate))
+			query = query.Where("received_at >= ?", startDate)
+		}
+	}
+	if filters.EndDate != "" {
+		if endDate, err := time.Parse("2006-01-02", filters.EndDate); err == nil {
+			// Add a day to include the end date
+			endDate = endDate.Add(24 * time.Hour)
+			debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying end_date filter: %s", filters.EndDate))
+			query = query.Where("received_at < ?", endDate)
+		}
+	}
+	if filters.IsRead != nil {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying is_read filter: %v", *filters.IsRead))
+		query = query.Where("is_read = ?", *filters.IsRead)
+	}
+	if filters.IsImportant != nil {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying is_important filter: %v", *filters.IsImportant))
+		query = query.Where("is_important = ?", *filters.IsImportant)
+	}
+	if filters.HasAttachments != nil {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying has_attachments filter: %v", *filters.HasAttachments))
+		query = query.Where("has_attachments = ?", *filters.HasAttachments)
+	}
+	if filters.Category != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying category filter: %s", filters.Category))
+		query = query.Where("category = ?", filters.Category)
+	}
+	if filters.SystemLabel != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying system_label filter: %s", filters.SystemLabel))
+		query = query.Where("system_labels @> ?", fmt.Sprintf(`["%s"]`, filters.SystemLabel))
+	}
+	if filters.Q != "" {
+		debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Applying full-text search (q): %s", filters.Q))
+		query = query.Where("search_vector @@ plainto_tsquery('english', ?)", filters.Q)
+	}
+
+	// Get total count
+	debug.DebugTextPrint("[SmartSearch] Counting matching emails...")
+	countStart := time.Now()
+	var total int64
+	if err := query.Model(&models.Email{}).Count(&total).Error; err != nil {
+		debug.DebugWarningTextPrint(fmt.Sprintf("[SmartSearch] Count query failed: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count emails: " + err.Error()})
+		return
+	}
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Count query took: %v, total: %d", time.Since(countStart), total))
+
+	// Apply pagination and sorting
+	offset := (req.Page - 1) * req.Limit
+	query = query.Order("received_at desc").Offset(offset).Limit(req.Limit)
+
+	// Execute query
+	debug.DebugTextPrint("[SmartSearch] Fetching emails...")
+	fetchStart := time.Now()
+	var emails []models.Email
+	if err := query.Find(&emails).Error; err != nil {
+		debug.DebugWarningTextPrint(fmt.Sprintf("[SmartSearch] Email fetch failed: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query emails: " + err.Error()})
+		return
+	}
+	debug.DebugTextPrint(fmt.Sprintf("[SmartSearch] Fetch query took: %v, found: %d emails", time.Since(fetchStart), len(emails)))
+
+	// Get user's clerk_id for the response
+	debug.DebugTextPrint("[SmartSearch] Getting user info for response...")
+	var user models.User
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		debug.DebugWarningTextPrint(fmt.Sprintf("[SmartSearch] User info fetch failed: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user information: " + err.Error()})
+		return
+	}
+
+	// Convert to filtered email response
+	filteredEmails := make([]FilteredEmail, len(emails))
+	for i, email := range emails {
+		clerkIDStr := ""
+		if user.ClerkID != nil {
+			clerkIDStr = *user.ClerkID
+		}
+
+		filteredEmails[i] = FilteredEmail{
+			ID:             email.ID,
+			ClerkID:        clerkIDStr,
+			MessageID:      email.MessageID,
+			ThreadID:       email.ThreadID,
+			Subject:        email.Subject,
+			FromEmail:      email.FromEmail,
+			FromName:       email.FromName,
+			ToEmails:       email.ToEmails,
+			CCEmails:       email.CcEmails,
+			BCCEmails:      email.BccEmails,
+			ReceivedAt:     email.ReceivedAt,
+			IsRead:         email.IsRead,
+			IsImportant:    email.IsImportant,
+			HasAttachments: email.HasAttachments,
+			Category:       email.Category,
+			SystemLabels:   email.SystemLabels,
+			UserLabelIDs:   email.UserLabelIDs,
+			LastSyncAt:     &email.LastSyncAt,
+		}
+	}
+
+	// Calculate pagination info
+	totalPages := int((total + int64(req.Limit) - 1) / int64(req.Limit))
+	hasNext := req.Page < totalPages
+	hasPrev := req.Page > 1
+
+	debug.DebugSuccessTextPrint(fmt.Sprintf("[SmartSearch] Completed successfully in %v - returning %d emails", time.Since(startTime), len(filteredEmails)))
+
+	c.JSON(http.StatusOK, SmartSearchResponse{
+		Emails: filteredEmails,
+		Pagination: PaginationInfo{
+			Page:       req.Page,
+			Limit:      req.Limit,
+			Total:      total,
+			TotalPages: totalPages,
+			HasNext:    hasNext,
+			HasPrev:    hasPrev,
+		},
+		AppliedFilters: filters,
+		RawQuery:       req.Query,
+	})
 }

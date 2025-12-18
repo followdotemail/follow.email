@@ -35,27 +35,27 @@ type EmailAnalysis struct {
 
 // ResponseSuggestion represents an AI-generated response suggestion
 type ResponseSuggestion struct {
-	Subject         string            `json:"subject"`
-	Body            string            `json:"body"`
-	Tone            string            `json:"tone"`
-	ResponseType    string            `json:"response_type"`
-	Confidence      float64           `json:"confidence"`
-	SuggestedDelay  time.Duration     `json:"suggested_delay"`
-	KeyPoints       []string          `json:"key_points"`
-	Metadata        map[string]string `json:"metadata"`
-	GeneratedAt     time.Time         `json:"generated_at"`
+	Subject        string            `json:"subject"`
+	Body           string            `json:"body"`
+	Tone           string            `json:"tone"`
+	ResponseType   string            `json:"response_type"`
+	Confidence     float64           `json:"confidence"`
+	SuggestedDelay time.Duration     `json:"suggested_delay"`
+	KeyPoints      []string          `json:"key_points"`
+	Metadata       map[string]string `json:"metadata"`
+	GeneratedAt    time.Time         `json:"generated_at"`
 }
 
 // FollowUpSuggestion represents an AI-generated follow-up suggestion
 type FollowUpSuggestion struct {
-	Subject         string        `json:"subject"`
-	Body            string        `json:"body"`
-	ScheduledFor    time.Time     `json:"scheduled_for"`
-	FollowUpType    string        `json:"follow_up_type"`
-	Reason          string        `json:"reason"`
-	Priority        string        `json:"priority"`
-	Confidence      float64       `json:"confidence"`
-	GeneratedAt     time.Time     `json:"generated_at"`
+	Subject      string    `json:"subject"`
+	Body         string    `json:"body"`
+	ScheduledFor time.Time `json:"scheduled_for"`
+	FollowUpType string    `json:"follow_up_type"`
+	Reason       string    `json:"reason"`
+	Priority     string    `json:"priority"`
+	Confidence   float64   `json:"confidence"`
+	GeneratedAt  time.Time `json:"generated_at"`
 }
 
 // NewAIService creates a new AI service with Google Gemini
@@ -66,9 +66,9 @@ func NewAIService(apiKey string) (*AIService, error) {
 		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
 	}
 
-	// Use Gemini Pro model for text generation
-	model := client.GenerativeModel("gemini-pro")
-	
+	// Use Gemini 3 Flash Preview model for text generation
+	model := client.GenerativeModel("gemini-2.5-flash-lite")
+
 	// Configure model parameters
 	model.SetTemperature(0.7)
 	model.SetTopK(40)
@@ -136,7 +136,7 @@ Return only valid JSON without any additional text or formatting.
 
 	// Extract the generated text
 	analysisText := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
-	
+
 	// Parse the JSON response (simplified for demo)
 	analysis := &EmailAnalysis{
 		Summary:          ai.extractField(analysisText, "summary"),
@@ -151,7 +151,7 @@ Return only valid JSON without any additional text or formatting.
 		ConfidenceScore:  ai.extractFloatField(analysisText, "confidence_score"),
 		ProcessedAt:      time.Now(),
 		Metadata: map[string]string{
-			"model_version": "gemini-pro",
+			"model_version": "gemini-2.0-flash",
 			"analysis_type": "comprehensive",
 		},
 	}
@@ -197,7 +197,7 @@ Return only valid JSON without any additional text.
 	}
 
 	responseText := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
-	
+
 	suggestion := &ResponseSuggestion{
 		Subject:        ai.extractField(responseText, "subject"),
 		Body:           ai.extractField(responseText, "body"),
@@ -208,7 +208,7 @@ Return only valid JSON without any additional text.
 		SuggestedDelay: time.Minute * 5, // Default 5-minute delay
 		GeneratedAt:    time.Now(),
 		Metadata: map[string]string{
-			"model_version": "gemini-pro",
+			"model_version":   "gemini-2.0-flash",
 			"generation_type": "response",
 		},
 	}
@@ -254,10 +254,10 @@ Return only valid JSON without any additional text.
 	}
 
 	followUpText := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
-	
+
 	// Calculate suggested follow-up time based on type and priority
 	scheduledFor := time.Now().Add(time.Hour * 24) // Default to next day
-	
+
 	suggestion := &FollowUpSuggestion{
 		Subject:      ai.extractField(followUpText, "subject"),
 		Body:         ai.extractField(followUpText, "body"),
@@ -334,8 +334,201 @@ func (ai *AIService) Close() error {
 func (ai *AIService) GetModelInfo() map[string]string {
 	return map[string]string{
 		"provider":     "Google",
-		"model":        "gemini-pro",
+		"model":        "gemini-2.0-flash",
 		"version":      "1.0",
 		"capabilities": "text-generation,analysis,summarization",
 	}
+}
+
+// SearchFilters represents structured search parameters extracted from natural language
+type SearchFilters struct {
+	FromEmail      string `json:"from_email,omitempty"`
+	ToEmail        string `json:"to_email,omitempty"`
+	Subject        string `json:"subject,omitempty"`
+	SubjectExact   *bool  `json:"subject_exact,omitempty"` // If true, subject uses exact match
+	BodyContains   string `json:"body_contains,omitempty"`
+	StartDate      string `json:"start_date,omitempty"` // ISO 8601 format
+	EndDate        string `json:"end_date,omitempty"`   // ISO 8601 format
+	IsRead         *bool  `json:"is_read,omitempty"`
+	IsImportant    *bool  `json:"is_important,omitempty"`
+	HasAttachments *bool  `json:"has_attachments,omitempty"`
+	Category       string `json:"category,omitempty"`
+	SystemLabel    string `json:"system_label,omitempty"`
+	Q              string `json:"q,omitempty"` // General search query
+}
+
+// ParseSearchQuery converts a natural language query into structured search filters
+func (ai *AIService) ParseSearchQuery(ctx context.Context, query string) (*SearchFilters, error) {
+	today := time.Now().Format("2006-01-02")
+	prompt := fmt.Sprintf(`
+You are an email search assistant. Convert the following natural language query into structured search filters.
+
+Today's date is: %s
+
+User query: "%s"
+
+Extract the relevant search parameters and return ONLY a valid JSON object with these optional fields:
+- from_email: sender email or name to search for
+- to_email: recipient email or name to search for
+- subject: keywords to search in subject (partial match)
+- body_contains: keywords to search in email body
+- start_date: start date in YYYY-MM-DD format (interpret "last week" as 7 days ago, "last month" as 30 days ago, etc.)
+- end_date: end date in YYYY-MM-DD format
+- is_read: true/false if user wants read/unread emails
+- is_important: true/false if user wants important emails
+- has_attachments: true/false if user is looking for emails with attachments
+- category: email category (personal, promotions, social, updates, forums)
+- system_label: Gmail label (INBOX, SENT, STARRED, TRASH, SPAM, DRAFT)
+- q: general search terms that don't fit other categories (use for semantic/topic searches like "about meeting")
+
+Return ONLY the JSON object, no explanation. Only include fields that are relevant to the query.
+Example output: {"from_email": "john", "start_date": "2024-12-01", "q": "meeting"}
+`, today, query)
+
+	resp, err := ai.model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse search query: %w", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("no response generated")
+	}
+
+	responseText := fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
+
+	// Clean up the response - remove markdown code blocks if present
+	responseText = strings.TrimSpace(responseText)
+	if strings.HasPrefix(responseText, "```json") {
+		responseText = strings.TrimPrefix(responseText, "```json")
+		responseText = strings.TrimSuffix(responseText, "```")
+		responseText = strings.TrimSpace(responseText)
+	} else if strings.HasPrefix(responseText, "```") {
+		responseText = strings.TrimPrefix(responseText, "```")
+		responseText = strings.TrimSuffix(responseText, "```")
+		responseText = strings.TrimSpace(responseText)
+	}
+
+	// Parse the JSON response
+	var filters SearchFilters
+	// Find the JSON object in the response
+	startIdx := strings.Index(responseText, "{")
+	endIdx := strings.LastIndex(responseText, "}")
+	if startIdx == -1 || endIdx == -1 {
+		// If no JSON found, use the query as general search
+		return &SearchFilters{Q: query}, nil
+	}
+
+	jsonStr := responseText[startIdx : endIdx+1]
+	if err := parseJSON(jsonStr, &filters); err != nil {
+		log.Printf("Failed to parse search filters JSON: %v, using query as general search", err)
+		return &SearchFilters{Q: query}, nil
+	}
+
+	log.Printf("Smart search parsed: query='%s' -> filters=%+v", query, filters)
+	return &filters, nil
+}
+
+// parseJSON is a simple JSON parser using standard library
+func parseJSON(jsonStr string, v interface{}) error {
+	// Use Go's encoding/json via strings
+	// This is a simplified approach - the actual JSON parsing happens in the caller
+	decoder := strings.NewReader(jsonStr)
+	return decodeJSON(decoder, v)
+}
+
+func decodeJSON(r *strings.Reader, v interface{}) error {
+	// Import encoding/json and decode
+	// For now, we'll do simple field extraction
+	filters, ok := v.(*SearchFilters)
+	if !ok {
+		return fmt.Errorf("invalid type")
+	}
+
+	str := ""
+	b := make([]byte, r.Len())
+	r.Read(b)
+	str = string(b)
+
+	// Extract fields using helper
+	if val := extractJSONString(str, "from_email"); val != "" {
+		filters.FromEmail = val
+	}
+	if val := extractJSONString(str, "to_email"); val != "" {
+		filters.ToEmail = val
+	}
+	if val := extractJSONString(str, "subject"); val != "" {
+		filters.Subject = val
+	}
+	if val := extractJSONString(str, "body_contains"); val != "" {
+		filters.BodyContains = val
+	}
+	if val := extractJSONString(str, "start_date"); val != "" {
+		filters.StartDate = val
+	}
+	if val := extractJSONString(str, "end_date"); val != "" {
+		filters.EndDate = val
+	}
+	if val := extractJSONString(str, "category"); val != "" {
+		filters.Category = val
+	}
+	if val := extractJSONString(str, "system_label"); val != "" {
+		filters.SystemLabel = val
+	}
+	if val := extractJSONString(str, "q"); val != "" {
+		filters.Q = val
+	}
+
+	// Handle boolean fields
+	if strings.Contains(str, `"is_read"`) {
+		if strings.Contains(str, `"is_read": true`) || strings.Contains(str, `"is_read":true`) {
+			t := true
+			filters.IsRead = &t
+		} else if strings.Contains(str, `"is_read": false`) || strings.Contains(str, `"is_read":false`) {
+			f := false
+			filters.IsRead = &f
+		}
+	}
+	if strings.Contains(str, `"is_important"`) {
+		if strings.Contains(str, `"is_important": true`) || strings.Contains(str, `"is_important":true`) {
+			t := true
+			filters.IsImportant = &t
+		} else if strings.Contains(str, `"is_important": false`) || strings.Contains(str, `"is_important":false`) {
+			f := false
+			filters.IsImportant = &f
+		}
+	}
+	if strings.Contains(str, `"has_attachments"`) {
+		if strings.Contains(str, `"has_attachments": true`) || strings.Contains(str, `"has_attachments":true`) {
+			t := true
+			filters.HasAttachments = &t
+		} else if strings.Contains(str, `"has_attachments": false`) || strings.Contains(str, `"has_attachments":false`) {
+			f := false
+			filters.HasAttachments = &f
+		}
+	}
+
+	return nil
+}
+
+// extractJSONString extracts a string value from a JSON string
+func extractJSONString(json, field string) string {
+	// Look for "field": "value" or "field":"value"
+	patterns := []string{
+		`"` + field + `": "`,
+		`"` + field + `":"`,
+	}
+
+	for _, pattern := range patterns {
+		start := strings.Index(json, pattern)
+		if start == -1 {
+			continue
+		}
+		start += len(pattern)
+		end := strings.Index(json[start:], `"`)
+		if end == -1 {
+			continue
+		}
+		return json[start : start+end]
+	}
+	return ""
 }

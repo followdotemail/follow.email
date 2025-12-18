@@ -44,6 +44,9 @@ type Config struct {
 	QStashCurrentSigningKey string
 	QStashNextSigningKey    string
 
+	// Redis configuration
+	RedisURL string
+
 	// Application settings
 	Environment string
 	LogLevel    string
@@ -87,6 +90,8 @@ func Load() *Config {
 		QStashToken:             getEnv("QSTASH_TOKEN", ""),
 		QStashCurrentSigningKey: getEnv("QSTASH_CURRENT_SIGNING_KEY", ""),
 		QStashNextSigningKey:    getEnv("QSTASH_NEXT_SIGNING_KEY", ""),
+
+		RedisURL: getEnv("REDIS_URL", ""),
 
 		Environment: getEnv("ENVIRONMENT", "development"),
 		LogLevel:    getEnv("LOG_LEVEL", "info"),

@@ -2,8 +2,11 @@
 
 import * as React from "react";
 import { Menu, RefreshCw, Search } from "lucide-react";
+import { useAuth } from "@clerk/nextjs";
+import useSWR from "swr";
 
 import { cn } from "@/lib/utils";
+import { mailListsFetcher, type MailListResponse } from "@/server/api/mail-lists";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import {
@@ -11,31 +14,12 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "../ui/resizable";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { TooltipProvider } from "../ui/tooltip";
 import { MailDisplay } from "@/components/mail/mail-display";
 import { MailList } from "@/components/mail/mail-list";
 import { Sidebar } from "@/components/mail/sidebar";
 import { useMail } from "@/store/use-mail";
-// Define the real email data structure
-export interface EmailData {
-  id: string;
-  clerk_id: string;
-  message_id: string;
-  thread_id: string;
-  subject: string;
-  from_email: string;
-  from_name: string;
-  to_emails: string;
-  cc_emails: string;
-  bcc_emails: string;
-  updated_at: string;
-  is_read: boolean;
-  is_important: boolean;
-  has_attachments: boolean;
-  labels: string;
-  last_sync_at: string;
-}
+
 import {
   Sheet,
   SheetContent,
@@ -51,98 +35,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { InboxIcon } from "@/utils/icons/inbox";
-import { DraftIcon } from "@/utils/icons/draft";
-import { SentIcon } from "@/utils/icons/sent";
-import { BinIcon } from "@/utils/icons/bin";
-import { ArchiveIcon } from "@/utils/icons/archive";
-import { SpamIcon } from "@/utils/icons/spam";
-import { FeedbackIcon } from "@/utils/icons/feedback";
-import { SettingIcon } from "@/utils/icons/setting";
-import { ClockIcon } from "@/utils/icons/clock";
+import { navItems } from "@/constants/sidebar";
+import { EmailData, MailProps, Pagination } from "@/types/mail";
 
-interface Pagination {
-  page: number;
-  limit: number;
-  total: number;
-  total_pages: number;
-  has_next: boolean;
-  has_prev: boolean;
-}
 
-interface MailProps {
-  accounts: {
-    label: string;
-    email: string;
-    icon: React.ReactNode;
-  }[];
-  mails: EmailData[];
-  initialPagination?: Pagination;
-  defaultLayout: number[] | undefined;
-  defaultCollapsed?: boolean;
-  navCollapsedSize: number;
-}
-
-const navItems = {
-  main: [
-    {
-      title: "Inbox",
-      label: "100",
-      icon: InboxIcon,
-      variant: "default" as const,
-    },
-    {
-      title: "Draft",
-      label: "2",
-      icon: DraftIcon,
-      variant: "ghost" as const,
-    },
-    {
-      title: "Sent",
-      label: "",
-      icon: SentIcon,
-      variant: "ghost" as const,
-    },
-    {
-      title: "Schedule",
-      label: "7",
-      icon: ClockIcon,
-      variant: "ghost" as const,
-    },
-    {
-      title: "Trash",
-      label: "5",
-      icon: BinIcon,
-      variant: "ghost" as const,
-    },
-    {
-      title: "Archive",
-      label: "",
-      icon: ArchiveIcon,
-      variant: "ghost" as const,
-    },
-    {
-      title: "Spam",
-      label: "24",
-      icon: SpamIcon,
-      variant: "ghost" as const,
-    },
-  ],
-  secondary: [
-    {
-      title: "Feedback",
-      label: "",
-      icon: FeedbackIcon,
-      variant: "ghost" as const,
-    },
-    {
-      title: "Settings",
-      label: "",
-      icon: SettingIcon,
-      variant: "ghost" as const,
-    },
-  ],
-};
 
 export function Mail({
   accounts,
@@ -156,38 +52,72 @@ export function Mail({
   const [mail] = useMail();
   const [isNavOpen, setIsNavOpen] = React.useState(false);
   const [emailCategory, setEmailCategory] = React.useState("primary");
-  const [emails, setEmails] = React.useState<EmailData[]>(mails);
+  const [currentPage, setCurrentPage] = React.useState(1);
+  const [allEmails, setAllEmails] = React.useState<EmailData[]>(mails);
   const [pagination, setPagination] = React.useState<Pagination | undefined>(
     initialPagination,
   );
-  const [isLoadingMore, setIsLoadingMore] = React.useState(false);
+  const { getToken } = useAuth();
 
-  const handleLoadMore = React.useCallback(async () => {
+  // Sync emails when mails prop changes (from parent revalidation)
+  React.useEffect(() => {
+    if (currentPage === 1) {
+      setAllEmails(mails);
+      setPagination(initialPagination);
+    }
+  }, [mails, initialPagination, currentPage]);
+
+  // Use SWR for loading more emails
+  const { isLoading: isLoadingMore } = useSWR<MailListResponse>(
+    pagination?.has_next && currentPage > 1 && getToken
+      ? [`mails-page-${currentPage}`, currentPage, pagination.limit, getToken]
+      : null,
+    async ([, page, limit, getTokenFn]: [string, number, number, () => Promise<string | null>]) => {
+      const token = await getTokenFn();
+      if (!token) {
+        throw new Error("Not authenticated");
+      }
+      return mailListsFetcher(token, page, limit);
+    },
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      dedupingInterval: 60000,
+      onSuccess: (data) => {
+        if (data?.emails) {
+          setAllEmails((prev) => [...prev, ...(data.emails as EmailData[])]);
+          setPagination(data.pagination);
+        }
+      },
+    },
+  );
+
+  const handleLoadMore = React.useCallback(() => {
     if (isLoadingMore) return;
     if (!pagination || !pagination.has_next) return;
-
-    try {
-      setIsLoadingMore(true);
-      const nextPage = pagination.page + 1;
-      const res = await fetch(
-        `/api/mails?page=${nextPage}&limit=${pagination.limit}`,
-      );
-      if (!res.ok) {
-        throw new Error(`Failed to load more emails: ${res.status}`);
-      }
-      const data = await res.json();
-
-      setEmails((prev) => [...prev, ...(data.data || [])]);
-      setPagination(data.pagination ?? pagination);
-    } catch (error) {
-      console.error("Error loading more emails:", error);
-    } finally {
-      setIsLoadingMore(false);
-    }
+    setCurrentPage((prev) => prev + 1);
   }, [isLoadingMore, pagination]);
 
-  const selectedMail: EmailData | null =
-    emails.find((item) => item.id === mail.selected) || null;
+  const handleRefresh = React.useCallback(async () => {
+    if (!getToken) return;
+    
+    try {
+      const token = await getToken();
+      if (!token) return;
+
+      const data = await mailListsFetcher(token, 1, pagination?.limit || 20);
+      setAllEmails(data.emails as EmailData[]);
+      setPagination(data.pagination);
+      setCurrentPage(1);
+    } catch (error) {
+      console.error("Error refreshing emails:", error);
+    }
+  }, [getToken, pagination?.limit]);
+
+  const selectedMail = React.useMemo<EmailData | null>(
+    () => allEmails.find((item) => item.id === mail.selected) || null,
+    [allEmails, mail.selected],
+  );
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -288,7 +218,12 @@ export function Mail({
                   </SelectContent>
                 </Select>
                 <div>
-                  <Button variant={"ghost"} size="icon">
+                  <Button
+                    variant={"ghost"}
+                    size="icon"
+                    onClick={handleRefresh}
+                    disabled={!getToken}
+                  >
                     <RefreshCw className="text-muted-foreground" />
                   </Button>
                 </div>
@@ -296,7 +231,7 @@ export function Mail({
 
               <div>
                 <MailList
-                  items={emails}
+                  items={allEmails}
                   hasMore={pagination?.has_next}
                   isLoadingMore={isLoadingMore}
                   onLoadMore={handleLoadMore}
@@ -367,7 +302,7 @@ export function Mail({
               </div>
 
               <MailList
-                items={emails}
+                items={allEmails}
                 hasMore={pagination?.has_next}
                 isLoadingMore={isLoadingMore}
                 onLoadMore={handleLoadMore}

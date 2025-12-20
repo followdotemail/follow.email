@@ -12,7 +12,5 @@ export default async function Mail() {
 
   const { isConnected } = await checkUserConsentStatus(token);
 
-  console.log("isConnected", isConnected);
-
-  return redirect(isConnected === true ? "/mail/inbox" : "/mail/onboarding");
+  return redirect(isConnected ? "/mail/inbox" : "/mail/onboarding");
 }

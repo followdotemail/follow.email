@@ -1,7 +1,7 @@
- "use client";
+"use client";
 import * as React from "react";
 import { ComponentProps } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useQueryState } from "nuqs";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -42,9 +42,7 @@ export function MailList({
   onLoadMore,
 }: MailListProps) {
   const [mail, setMail] = useMail();
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const [, setThreadId] = useQueryState("threadId");
   const loaderRef = React.useRef<HTMLDivElement | null>(null);
 
   // Helper function to extract name from email
@@ -110,15 +108,13 @@ export function MailList({
                   ...mail,
                   selected: item.id,
                 });
-                const params = new URLSearchParams(searchParams?.toString());
-                params.set("threadId", item.id);
-                router.push(`${pathname}?${params.toString()}`, { scroll: false });
+                setThreadId(item.id);
               }}
             >
               <div className="flex w-full items-center gap-3">
                 <Avatar className="h-8 w-8 sm:h-10 sm:w-10">
                   <AvatarImage alt={senderName} className="" />
-                  <AvatarFallback className="font-bold text-muted-foreground bg-zinc-700/60 text-base">
+                  <AvatarFallback className="font-semibold text-muted-foreground bg-zinc-700/60 text-base">
                     {senderName[0].toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
@@ -127,7 +123,7 @@ export function MailList({
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       <div
                         className={cn(
-                          "font-bold line-clamp-1 sm:text-sm",
+                          "font-medium line-clamp-1 sm:text-sm",
                           !item.is_read
                             ? "text-foreground"
                             : "text-muted-foreground"
@@ -136,10 +132,10 @@ export function MailList({
                         {senderName}
                       </div>
                       {!item.is_read && (
-                        <span className="flex h-2 w-2 rounded-full bg-yellow-500 flex-shrink-0" />
+                        <span className="flex h-2 w-2 rounded-full bg-yellow-500 shrink-0" />
                       )}
                     </div>
-                    <div className="ml-auto text-xs whitespace-nowrap flex-shrink-0 text-muted-foreground">
+                    <div className="ml-auto text-xs whitespace-nowrap shrink-0 text-muted-foreground">
                       {new Date(item.updated_at).toISOString().split("T")[0]}
                     </div>
                   </div>

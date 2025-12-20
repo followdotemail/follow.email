@@ -1,45 +1,95 @@
-import { cookies } from "next/headers";
+"use client";
+
+import { useEffect, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
+import useSWR from "swr";
 import { accounts } from "@/constants/mail-data";
-import { Mail, type EmailData } from "@/components/mail/mail";
-import { fetchMailLists } from "@/server/api/mail-lists";
-import { auth } from "@clerk/nextjs/server";
-import { redirect } from "next/navigation";
+import { Mail } from "@/components/mail/mail";
+import { mailListsFetcher, type MailListResponse } from "@/server/api/mail-lists";
+import { EmailData } from "@/types/mail";
 
-export default async function MailPage() {
-  const { getToken } = await auth();
+export default function MailPage() {
+  const { getToken, isLoaded } = useAuth();
+  const router = useRouter();
+  const [token, setToken] = useState<string | null>(null);
+  const [layout, setLayout] = useState<unknown[] | undefined>();
+  const [collapsed, setCollapsed] = useState<unknown[] | undefined>();
 
-  if (!getToken) {
-    redirect("/sign-in");
-  }
+  useEffect(() => {
+    if (!isLoaded) return;
 
-  const token = await getToken();
+    const initAuth = async () => {
+      const authToken = await getToken();
+      if (!authToken) {
+        router.push("/sign-in");
+        return;
+      }
+      setToken(authToken);
+    };
+
+    initAuth();
+  }, [isLoaded, getToken, router]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      const layoutValue = localStorage.getItem(
+        "react-resizable-panels:layout:mail",
+      );
+      const collapsedValue = localStorage.getItem(
+        "react-resizable-panels:collapsed",
+      );
+
+      if (layoutValue) setLayout(JSON.parse(layoutValue));
+      if (collapsedValue) setCollapsed(JSON.parse(collapsedValue));
+    } catch (error) {
+      console.error("Error parsing layout preferences:", error);
+    }
+  }, []);
+
+  const { data, isLoading, error } = useSWR<MailListResponse>(
+    token ? [token, 1, 20] : null,
+    (key: unknown[]) => {
+      const [authToken, page, limit] = key as [string, number, number];
+      return mailListsFetcher(authToken, page, limit);
+    },
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: true,
+      dedupingInterval: 60000,
+    },
+  );
+
   if (!token) {
-    redirect("/sign-in");
+    return null;
   }
 
-  const mailData = await fetchMailLists(token, 1, 20);
+  // if (isLoading) {
+  //   return <div className="flex items-center justify-center p-4">Loading...</div>;
+  // }
 
-  const cookieStore = await cookies();
-  const layout = cookieStore.get("react-resizable-panels:layout:mail");
-  const collapsed = cookieStore.get("react-resizable-panels:collapsed");
+  if (error) {
+    return (
+      <div className="flex items-center justify-center p-4 text-red-500">
+        Error loading emails
+      </div>
+    );
+  }
 
-  const defaultLayout = layout ? JSON.parse(layout.value) : undefined;
-  const defaultCollapsed = collapsed ? JSON.parse(collapsed.value) : undefined;
-
-  const mails = (mailData.data || []) as EmailData[];
+  const mails = (data?.emails || []) as EmailData[];
 
   return (
-    <>
-      <div className=" flex-col md:flex">
-        <Mail
-          accounts={accounts}
-          mails={mails}
-          initialPagination={mailData.pagination}
-          defaultLayout={defaultLayout}
-          defaultCollapsed={defaultCollapsed}
-          navCollapsedSize={4}
-        />
-      </div>
-    </>
+    <div className="flex-col md:flex">
+      <Mail
+        accounts={accounts}
+        mails={mails}
+        initialPagination={data?.pagination}
+        defaultLayout={layout as number[] | undefined}
+        defaultCollapsed={collapsed as boolean | undefined}
+        navCollapsedSize={4}
+      />
+    </div>
   );
 }

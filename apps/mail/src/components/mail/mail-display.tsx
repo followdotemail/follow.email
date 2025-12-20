@@ -11,10 +11,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useState } from "react";
+import { useQueryState } from "nuqs";
 import { BASE_URL } from "@/constants/base-url";
 import { useAuth } from "@clerk/nextjs";
+import useSWR from "swr";
+import { RiLoader3Fill, RiLoaderFill } from "react-icons/ri";
+
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -88,31 +91,17 @@ export function MailDisplay({ mail }: MailDisplayProps) {
     subject: "",
     body: "",
   });
-  const [emailContent, setEmailContent] = useState<EmailContent | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   
-  const searchParams = useSearchParams();
+  const [threadId, setThreadId] = useQueryState("threadId");
   const { getToken } = useAuth();
 
-  // Helper function to extract name from email
-  const getNameFromEmail = (email: string) => {
-    const match = email.match(/^(.+?)\s*<(.+)>$/);
-    if (match) {
-      return match[1].trim() || match[2].split('@')[0];
-    }
-    return email.split('@')[0];
-  };
-
-  // Function to fetch email content
-  const fetchEmailContent = async (threadId: string) => {
-    if (!threadId) return;
-    
-    setLoading(true);
-    setError(null);
-    
-    try {
-      const token = await getToken();
+  // Use SWR to fetch email content
+  const { data: emailContent, error, isLoading: loading } = useSWR<EmailContent>(
+    threadId && getToken
+      ? [`email-content-${threadId}`, threadId, getToken]
+      : null,
+    async ([, threadId, getTokenFn]: [string, string, () => Promise<string | null>]) => {
+      const token = await getTokenFn();
       if (!token) {
         throw new Error("Not authenticated");
       }
@@ -129,28 +118,28 @@ export function MailDisplay({ mail }: MailDisplayProps) {
         throw new Error(`Server error: ${response.status}`);
       }
 
-      const data = await response.json();
-      setEmailContent(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch email content");
-      console.error("Error fetching email content:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+      return response.json();
+    },
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: true,
+      dedupingInterval: 60000,
+      errorRetryCount: 2,
+    },
+  );
 
-  // Fetch email content when threadId changes
-  useEffect(() => {
-    const threadId = searchParams.get('threadId');
-    if (threadId) {
-      fetchEmailContent(threadId);
-    } else {
-      setEmailContent(null);
+  // Helper function to extract name from email
+  const getNameFromEmail = (email: string) => {
+    const match = email.match(/^(.+?)\s*<(.+)>$/);
+    if (match) {
+      return match[1].trim() || match[2].split('@')[0];
     }
-  }, [searchParams, getToken]);
+    return email.split('@')[0];
+  };
 
   const handleBack = () => {
     setMail((prev) => ({ ...prev, selected: "" }));
+    setThreadId(null);
   };
 
   const handleReply = () => {
@@ -396,13 +385,14 @@ export function MailDisplay({ mail }: MailDisplayProps) {
             <div className="p-4">
               {loading && (
                 <div className="flex items-center justify-center py-8">
-                  <div className="text-muted-foreground">Loading email content...</div>
+                  <div className="text-muted-foreground"><RiLoader3Fill size={20} className="animate-spin" />
+                  </div>
                 </div>
               )}
               
               {error && (
                 <div className="text-red-500 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg p-3 mb-4">
-                  Error: {error}
+                  Error: {error instanceof Error ? error.message : "Failed to fetch email content"}
                 </div>
               )}
               

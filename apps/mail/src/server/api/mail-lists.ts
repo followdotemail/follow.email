@@ -1,6 +1,6 @@
 import { BASE_URL } from "@/constants/base-url";
 
-interface PaginationDTO {
+export interface PaginationDTO {
   page: number;
   limit: number;
   total: number;
@@ -9,49 +9,35 @@ interface PaginationDTO {
   has_prev: boolean;
 }
 
-interface MailListResponse {
+export interface MailListResponse {
   emails: unknown[];
   pagination?: PaginationDTO;
 }
 
-export async function fetchMailLists(
+export const mailListsFetcher = async (
   token: string,
   page: number = 1,
   limit: number = 20,
-) {
-  try {
-    const url = new URL(`${BASE_URL}/emails`);
-    url.searchParams.set("page", String(page));
-    url.searchParams.set("limit", String(limit));
-
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Server error: ${response.status}`);
-    }
-
-    const responseData = (await response.json()) as MailListResponse;
-
-    return {
-      status: response.status,
-      data: responseData.emails || [],
-      pagination: responseData.pagination,
-      success: true,
-    };
-  } catch (error) {
-    console.error("Error fetching mail lists:", error);
-    return {
-      status: 500,
-      data: [],
-      pagination: undefined,
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
+): Promise<MailListResponse> => {
+  if (!BASE_URL) {
+    throw new Error("BASE_URL is not configured");
   }
-}
+
+  const url = new URL(`${BASE_URL}/emails`);
+  url.searchParams.set("page", String(page));
+  url.searchParams.set("limit", String(limit));
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json();
+};

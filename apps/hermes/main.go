@@ -36,6 +36,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -49,6 +50,7 @@ import (
 	"follow-email-backend/internal/routes"
 	"follow-email-backend/internal/services"
 	"follow-email-backend/pkg/ai"
+	"follow-email-backend/pkg/cache"
 	"follow-email-backend/pkg/debug"
 	"follow-email-backend/pkg/encryption"
 	"follow-email-backend/pkg/oauth"
@@ -63,13 +65,13 @@ func main() {
 	env := os.Getenv("ENVIRONMENT")
 	if env != "staging" && env != "production" {
 		if err := godotenv.Load(); err != nil {
-			log.Println("Warning: No .env file found. Using system environment variables.")
-			log.Println("If you need to set environment variables, create a .env file in the project root.")
+			debug.DebugWarningTextPrint("Warning: No .env file found. Using system environment variables.")
+			debug.DebugTextPrint("If you need to set environment variables, create a .env file in the project root.")
 		} else {
-			log.Println("Successfully loaded environment variables from .env file")
+			debug.DebugSuccessTextPrint("Successfully loaded environment variables from .env file")
 		}
 	} else {
-		log.Printf("Running in %s environment - using system environment variables", env)
+		debug.DebugTextPrint(fmt.Sprintf("Running in %s environment - using system environment variables", env))
 	}
 
 	// Load configuration
@@ -78,7 +80,7 @@ func main() {
 	// Initialize debug logging to file
 	debug.SetLogsDirectory("logs")
 	defer debug.CloseLogFile()
-	log.Println("Debug logging initialized - logs will be saved to logs/ directory")
+	debug.DebugTextPrint("Debug logging initialized - logs will be saved to logs/ directory")
 
 	// Set Gin mode based on environment
 	if cfg.Environment == "production" {
@@ -116,7 +118,7 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatal("Failed to run database migrations:", err)
 	}
-	log.Println("Database migrations completed successfully")
+	debug.DebugSuccessTextPrint("Database migrations completed successfully")
 
 	// Initialize encryption service
 	encryptionService, err := encryption.NewEncryptionService(cfg.EncryptionKey)
@@ -126,18 +128,18 @@ func main() {
 
 	// Set global encryption service for models
 	models.SetEncryptionService(encryptionService)
-	log.Println("Encryption service initialized successfully")
+	debug.DebugSuccessTextPrint("Encryption service initialized successfully")
 
 	// Initialize AI service
 	aiService, err := ai.NewAIService(cfg.GeminiAPIKey)
 	if err != nil {
-		log.Printf("Warning: Failed to initialize AI service: %v", err)
+		debug.DebugWarningTextPrint(fmt.Sprintf("Warning: Failed to initialize AI service: %v", err))
 		// Continue without AI service for now
 	}
 
 	// Initialize QStash service
 	qstashService := queue.NewQStashService(cfg.QStashToken, cfg.BaseURL+"/api/v1/webhooks")
-	log.Println("QStash service initialized successfully")
+	debug.DebugSuccessTextPrint("QStash service initialized successfully")
 
 	// Initialize storage service
 	storageConfig := &storage.StorageConfig{
@@ -149,7 +151,7 @@ func main() {
 	}
 	storageService, err := storage.NewS3Service(context.Background(), storageConfig)
 	if err != nil {
-		log.Printf("Warning: Failed to initialize storage service: %v", err)
+		debug.DebugWarningTextPrint(fmt.Sprintf("Warning: Failed to initialize storage service: %v", err))
 		// Continue without storage service for now
 	}
 
@@ -158,7 +160,7 @@ func main() {
 
 	// Initialize Gmail services
 	gmailTokenService := services.NewGmailTokenService(db, gmailOAuthService)
-	gmailSyncService := services.NewGmailSyncService(db, gmailOAuthService, gmailTokenService, storageService)
+	gmailSyncService := services.NewGmailSyncService(db, gmailOAuthService, gmailTokenService, storageService, qstashService)
 
 	// Initialize email sync service
 	oauthService := oauth.NewOAuthService(cfg)
@@ -170,10 +172,25 @@ func main() {
 	// Initialize label service
 	labelService := services.NewLabelService(db, gmailOAuthService, gmailTokenService)
 
+	// Initialize cache service (for ETag caching)
+	var cacheService *cache.CacheService
+	if cfg.RedisURL != "" {
+		var err error
+		cacheService, err = cache.NewCacheService(cfg.RedisURL)
+		if err != nil {
+			debug.DebugWarningTextPrint(fmt.Sprintf("Warning: Failed to initialize Redis cache: %v", err))
+			// Continue without cache - graceful degradation
+		} else {
+			debug.DebugSuccessTextPrint("Redis cache service initialized successfully")
+		}
+	} else {
+		debug.DebugTextPrint("Redis URL not configured - ETag caching disabled")
+	}
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(cfg, db)
-	emailHandler := handlers.NewEmailHandler(db, emailSyncService, aiService, qstashService, storageService, gmailTokenService, gmailSyncService)
-	labelHandler := handlers.NewLabelHandler(db, labelService) 
+	emailHandler := handlers.NewEmailHandler(db, emailSyncService, aiService, qstashService, storageService, gmailTokenService, gmailSyncService, cacheService)
+	labelHandler := handlers.NewLabelHandler(db, labelService)
 	privacyHandler := handlers.NewPrivacyHandler(privacyService)
 	gmailConsentHandler := handlers.NewGmailConsentHandler(cfg, db, gmailOAuthService, qstashService)
 	webhookHandler := handlers.NewWebhookHandler(cfg, db, emailSyncService, aiService, gmailSyncService)
@@ -206,7 +223,7 @@ func main() {
 	})
 
 	// Start server
-	log.Printf("Starting Follow Email Backend server on 0.0.0.0:%s", cfg.Port)
+	debug.DebugTextPrint(fmt.Sprintf("Starting Follow Email Backend server on 0.0.0.0:%s", cfg.Port))
 	if err := r.Run("0.0.0.0:" + cfg.Port); err != nil {
 		log.Fatal("Failed to start server:", err)
 	}

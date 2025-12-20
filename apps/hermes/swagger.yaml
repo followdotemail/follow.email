@@ -1034,12 +1034,26 @@ paths:
         category, system labels, and user labels.
         
         **Default Filters:**
-        - `category`: "personal" (shows personal emails by default)
-        - `system_label`: INBOX, IMPORTANT, or UNREAD (shows emails in these system labels)
-        - Use `no_defaults=true` to bypass all default filters
+        - **When browsing**: `category` defaults to "personal"
+        - **When searching** (using `q`, `body_contains`, or `subject`): No category filter is applied (searches all categories)
+        - **Always**: Emails with labels TRASH, ARCHIVED, DRAFT, SENT, SPAM, CHAT are excluded
+        - Use explicit `system_label` parameter to override the exclusion behavior
+        - Use `no_defaults=true` to bypass default category filter
+
+        **Caching (ETag):**
+        - Response includes `ETag` header for conditional requests
+        - Send `If-None-Match` header with previous ETag to check if data changed
+        - Returns `304 Not Modified` if data unchanged (saves bandwidth)
       security:
         - bearer: []
+      produces:
+        - application/json
       parameters:
+        - name: If-None-Match
+          in: header
+          description: Previous ETag value for conditional request. If matched, returns 304.
+          type: string
+          required: false
         - name: page
           in: query
           description: Page number for pagination (starts from 1)
@@ -1145,6 +1159,37 @@ paths:
           type: boolean
           default: false
           example: false
+        # Search filters
+        - name: q
+          in: query
+          description: |
+            General search query using PostgreSQL Full-Text Search.
+            Searches across subject, from_email, from_name, and body_snippet.
+            Supports stemming and relevance ranking.
+          type: string
+          example: "meeting agenda"
+        - name: body_contains
+          in: query
+          description: |
+            Search for emails containing this text in the body.
+            Uses partial match (ILIKE) on the body snippet.
+          type: string
+          example: "project deadline"
+        - name: subject_exact
+          in: query
+          description: |
+            If true, the `subject` parameter uses exact match instead of partial match.
+            Default is false (partial match using ILIKE).
+          type: boolean
+          default: false
+          example: false
+        - name: to_email
+          in: query
+          description: |
+            Filter by recipient email address.
+            Uses partial match (ILIKE) on the to_emails field.
+          type: string
+          example: "team@company.com"
         - name: sort_by
           in: query
           description: Field to sort by
@@ -1201,7 +1246,7 @@ paths:
                     bcc_emails:
                       type: string
                       example: ""
-                    updated_at:
+                    received_at:
                       type: string
                       format: date-time
                       example: "2023-10-15T10:30:00Z"
@@ -1289,6 +1334,12 @@ paths:
                     label_list_visibility:
                       type: string
                       example: "labelShow"
+        304:
+          description: Not Modified - data unchanged since last request (ETag matched)
+          headers:
+            ETag:
+              description: Entity tag for caching
+              type: string
         400:
           description: Bad request - invalid query parameters
           schema:
@@ -1540,6 +1591,119 @@ paths:
             $ref: '#/definitions/ErrorResponse'
         503:
           description: Gmail service not available
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+
+  /emails/smart-search:
+    post:
+      tags:
+        - emails
+      summary: Smart search using natural language
+      description: |
+        Performs AI-powered natural language email search.
+        Converts natural language queries like "emails from john about meeting last week"
+        into structured search filters and returns matching emails.
+
+        **Example Queries:**
+        - "emails from john about meeting"
+        - "unread emails with attachments from last week"
+        - "important emails from december 2023"
+        - "emails about project deadline"
+
+        **Returns:**
+        - Matching emails
+        - Applied filters (so user can see what the AI extracted)
+        - Original query
+      security:
+        - bearer: []
+      parameters:
+        - name: body
+          in: body
+          description: Smart search request parameters
+          required: true
+          schema:
+            type: object
+            required:
+              - query
+            properties:
+              query:
+                type: string
+                description: Natural language search query
+                example: "emails from john about the meeting last week"
+              page:
+                type: integer
+                description: Page number (starts from 1)
+                default: 1
+                minimum: 1
+              limit:
+                type: integer
+                description: Number of results per page
+                default: 20
+                minimum: 1
+                maximum: 100
+      responses:
+        200:
+          description: Search results retrieved successfully
+          schema:
+            type: object
+            properties:
+              emails:
+                type: array
+                description: Matching emails
+                items:
+                  $ref: '#/definitions/FilteredEmail'
+              pagination:
+                $ref: '#/definitions/PaginationInfo'
+              applied_filters:
+                type: object
+                description: Filters extracted from the natural language query
+                properties:
+                  from_email:
+                    type: string
+                    example: "john"
+                  to_email:
+                    type: string
+                  subject:
+                    type: string
+                  subject_exact:
+                    type: boolean
+                    description: If true, subject uses exact match
+                  body_contains:
+                    type: string
+                  start_date:
+                    type: string
+                    format: date
+                    example: "2024-12-01"
+                  end_date:
+                    type: string
+                    format: date
+                  is_read:
+                    type: boolean
+                  is_important:
+                    type: boolean
+                  has_attachments:
+                    type: boolean
+                  category:
+                    type: string
+                  system_label:
+                    type: string
+                  q:
+                    type: string
+                    description: General search terms
+              raw_query:
+                type: string
+                description: The original natural language query
+                example: "emails from john about the meeting last week"
+        400:
+          description: Invalid request parameters
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        401:
+          description: Unauthorized - Invalid or missing authentication token
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        500:
+          description: Failed to parse query or search emails
           schema:
             $ref: '#/definitions/ErrorResponse'
 

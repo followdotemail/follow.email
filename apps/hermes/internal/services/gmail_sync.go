@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"follow-email-backend/internal/models"
+	"follow-email-backend/internal/queue"
 	"follow-email-backend/pkg/debug"
 	"follow-email-backend/pkg/email"
 	gmailpkg "follow-email-backend/pkg/gmail"
@@ -35,6 +36,7 @@ type GmailSyncService struct {
 	gmailOAuthService *oauth.GmailOAuthService
 	tokenService      *GmailTokenService
 	s3Service         *storage.S3Service
+	qstashService     *queue.QStashService
 }
 
 // SendEmailRequest represents a request to send an email
@@ -84,12 +86,13 @@ type EmailBodyContent struct {
 }
 
 // NewGmailSyncService creates a new Gmail sync service
-func NewGmailSyncService(db *gorm.DB, gmailOAuthService *oauth.GmailOAuthService, tokenService *GmailTokenService, s3Service *storage.S3Service) *GmailSyncService {
+func NewGmailSyncService(db *gorm.DB, gmailOAuthService *oauth.GmailOAuthService, tokenService *GmailTokenService, s3Service *storage.S3Service, qstashService *queue.QStashService) *GmailSyncService {
 	return &GmailSyncService{
 		db:                db,
 		gmailOAuthService: gmailOAuthService,
 		tokenService:      tokenService,
 		s3Service:         s3Service,
+		qstashService:     qstashService,
 	}
 }
 
@@ -338,7 +341,29 @@ func (s *GmailSyncService) performFullSync(ctx context.Context, service *gmail.S
 	if err == nil {
 		result.HistoryID = strconv.FormatUint(profile.HistoryId, 10)
 		if err := s.tokenService.UpdateUserSyncStatus(req.UserID, &now, result.HistoryID); err != nil {
-			log.Printf("Failed to update user sync status: %v", err)
+			debug.DebugErrorTextPrint(fmt.Sprintf("Failed to update user sync status: %v", err))
+		}
+	}
+
+	// Trigger backfill if there are more pages
+	if nextPageToken != "" {
+		debug.DebugTextPrint(fmt.Sprintf("Triggering background backfill for user %s", req.UserID))
+
+		// Update consent with next page token
+		if err := s.db.Model(gmailConsent).Updates(map[string]interface{}{
+			"next_page_token": nextPageToken,
+			"backfill_status": "in_progress",
+		}).Error; err != nil {
+			debug.DebugErrorTextPrint(fmt.Sprintf("Failed to update backfill status: %v", err))
+		} else {
+			// Queue backfill job with a small initial delay (1 minute) to let the server breathe
+			err := s.qstashService.PublishEmailSyncWithDelay(ctx, queue.EmailSyncMessage{
+				UserID:   req.UserID.String(),
+				SyncType: "backfill",
+			}, 1*time.Minute)
+			if err != nil {
+				debug.DebugErrorTextPrint(fmt.Sprintf("Failed to queue backfill job: %v", err))
+			}
 		}
 	}
 
@@ -717,6 +742,9 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 
 	debug.DebugTextPrint(fmt.Sprintf("Email %s - Final userLabelIDs: %v (JSON: %s)", message.Id, userLabelIDs, gmailpkg.ToJson(userLabelIDs)))
 
+	// Extract email security/authentication info from headers
+	mailedBy, signedBy, securityInfo := extractSecurityInfo(headers)
+
 	return &models.Email{
 		UserID:         userID,
 		MessageID:      message.Id,
@@ -730,13 +758,17 @@ func (s *GmailSyncService) extractEmailData(message *gmail.Message, userID uuid.
 		SentAt:         sentAt,
 		ReceivedAt:     sentAt,
 		EmailSize:      int64(message.SizeEstimate),
-		S3BodyKey:      "", // Will be set when storing body in S3
+		S3BodyKey:      "",              // Will be set when storing body in S3
+		BodySnippet:    message.Snippet, // Gmail API provides a snippet of the email body
 		HasAttachments: len(message.Payload.Parts) > 1,
 		Category:       parsedLabels.Category,
 		SystemLabels:   gmailpkg.ToJson(parsedLabels.SystemLabels),
 		UserLabelIDs:   gmailpkg.ToJson(userLabelIDs),
 		LastSyncAt:     time.Now(),
 		SyncVersion:    syncVersion,
+		MailedBy:       mailedBy,
+		SignedBy:       signedBy,
+		SecurityInfo:   securityInfo,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -750,6 +782,102 @@ func (s *GmailSyncService) extractEmailContent(payload *gmail.MessagePart) Email
 	}
 
 	return EmailBodyContent{HTML: decodeBodyDataToHTML(payload.Body.Data, payload.MimeType), MimeType: payload.MimeType}
+}
+
+// extractSecurityInfo extracts email security/authentication info from headers
+// Returns: mailedBy, signedBy, securityInfo
+func extractSecurityInfo(headers map[string]string) (string, string, string) {
+	var mailedBy, signedBy, securityInfo string
+
+	// Parse Authentication-Results header for DKIM and SPF info
+	// Example: "mx.google.com; dkim=pass header.i=@swiggy.in; spf=pass ... designates 23.251.234.123"
+	if authResults, exists := headers["authentication-results"]; exists {
+		authResults = strings.ToLower(authResults)
+
+		// Extract signed-by from dkim=pass header.i=@domain or header.d=domain
+		if strings.Contains(authResults, "dkim=pass") {
+			// Look for header.i=@domain or header.d=domain
+			for _, pattern := range []string{"header.i=@", "header.d="} {
+				if idx := strings.Index(authResults, pattern); idx != -1 {
+					start := idx + len(pattern)
+					end := start
+					for end < len(authResults) && authResults[end] != ' ' && authResults[end] != ';' {
+						end++
+					}
+					if end > start {
+						signedBy = authResults[start:end]
+						break
+					}
+				}
+			}
+		}
+
+		// Extract mailed-by from SPF designates domain
+		if strings.Contains(authResults, "spf=pass") {
+			// Look for "designates X.X.X.X as permitted sender" or domain info
+			if idx := strings.Index(authResults, "domain of "); idx != -1 {
+				start := idx + len("domain of ")
+				end := start
+				for end < len(authResults) && authResults[end] != ' ' && authResults[end] != ';' {
+					end++
+				}
+				if end > start {
+					domain := authResults[start:end]
+					// Extract domain after @ if present
+					if atIdx := strings.LastIndex(domain, "@"); atIdx != -1 {
+						mailedBy = domain[atIdx+1:]
+					}
+				}
+			}
+		}
+	}
+
+	// Alternative: Check Received-SPF header
+	if mailedBy == "" {
+		if receivedSPF, exists := headers["received-spf"]; exists {
+			receivedSPF = strings.ToLower(receivedSPF)
+			// Look for client-ip or domain info
+			if strings.Contains(receivedSPF, "pass") {
+				if idx := strings.Index(receivedSPF, "domain of "); idx != -1 {
+					start := idx + len("domain of ")
+					end := start
+					for end < len(receivedSPF) && receivedSPF[end] != ' ' && receivedSPF[end] != ')' {
+						end++
+					}
+					if end > start {
+						domain := receivedSPF[start:end]
+						if atIdx := strings.LastIndex(domain, "@"); atIdx != -1 {
+							mailedBy = domain[atIdx+1:]
+						} else {
+							mailedBy = domain
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Parse Received header for TLS info
+	// Example: "from mail-pj1... (TLS version=TLS1_3 cipher=TLS_AES_256_GCM...)"
+	if received, exists := headers["received"]; exists {
+		received = strings.ToLower(received)
+		if strings.Contains(received, "tls") {
+			if strings.Contains(received, "tls1_3") || strings.Contains(received, "tls 1.3") {
+				securityInfo = "Standard encryption (TLS 1.3)"
+			} else if strings.Contains(received, "tls1_2") || strings.Contains(received, "tls 1.2") {
+				securityInfo = "Standard encryption (TLS 1.2)"
+			} else {
+				securityInfo = "Standard encryption (TLS)"
+			}
+		}
+	}
+
+	// Default security info if we found any encryption indication
+	if securityInfo == "" && (mailedBy != "" || signedBy != "") {
+		securityInfo = "Standard encryption (TLS)"
+	}
+
+	return mailedBy, signedBy, securityInfo
 }
 
 // decodeBodyData converts Gmail's base64url body data into HTML and plain-text variants.
@@ -1117,6 +1245,15 @@ func (s *GmailSyncService) updateEmailLabels(ctx context.Context, service *gmail
 	debug.DebugTextPrint(fmt.Sprintf("updateEmailLabels for %s - Category: %s, SystemLabels: %v, UserLabelIDs: %v",
 		messageID, parsedLabels.Category, parsedLabels.SystemLabels, userLabelIDs))
 
+	// Check if email is read (UNREAD label not present)
+	isRead := true
+	for _, label := range parsedLabels.SystemLabels {
+		if label == "UNREAD" {
+			isRead = false
+			break
+		}
+	}
+
 	return s.db.Model(&models.Email{}).
 		Where("message_id = ? AND user_id = ?", messageID, userID).
 		Updates(map[string]interface{}{
@@ -1124,6 +1261,7 @@ func (s *GmailSyncService) updateEmailLabels(ctx context.Context, service *gmail
 			"category":       parsedLabels.Category,
 			"system_labels":  gmailpkg.ToJson(parsedLabels.SystemLabels),
 			"user_label_ids": gmailpkg.ToJson(userLabelIDs),
+			"is_read":        isRead,
 			"last_sync_at":   time.Now(),
 			"updated_at":     time.Now(),
 		}).Error
@@ -1506,4 +1644,114 @@ func isValidGmailThreadID(threadID string) bool {
 	}
 
 	return true
+}
+
+// PerformBackfillSync performs a background backfill of older emails
+func (s *GmailSyncService) PerformBackfillSync(ctx context.Context, userID uuid.UUID) error {
+	debug.DebugTextPrint(fmt.Sprintf("Starting backfill sync for user %s", userID))
+
+	// Get consent record to check status and token
+	var gmailConsent models.GmailConsent
+	if err := s.db.Where("user_id = ?", userID).First(&gmailConsent).Error; err != nil {
+		return fmt.Errorf("failed to get Gmail consent record: %w", err)
+	}
+
+	if gmailConsent.BackfillStatus == "completed" {
+		debug.DebugTextPrint(fmt.Sprintf("Backfill already completed for user %s", userID))
+		return nil
+	}
+
+	// Update status to in_progress if not already
+	if gmailConsent.BackfillStatus != "in_progress" {
+		if err := s.db.Model(&gmailConsent).Update("backfill_status", "in_progress").Error; err != nil {
+			debug.DebugErrorTextPrint(fmt.Sprintf("Failed to update backfill status: %v", err))
+		}
+	}
+
+	// Get valid token for user
+	tokenInfo, err := s.tokenService.GetValidToken(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get valid Gmail token: %w", err)
+	}
+
+	// Create Gmail service
+	gmailService, err := s.gmailOAuthService.CreateGmailService(ctx, tokenInfo)
+	if err != nil {
+		return fmt.Errorf("failed to create Gmail service: %w", err)
+	}
+
+	// List messages using the next page token
+	// We use a smaller batch size for backfill to be gentle
+	batchSize := int64(100)
+	query := "in:inbox OR in:sent" // Same query as full sync
+
+	messagesCall := gmailService.Users.Messages.List("me").Q(query).MaxResults(batchSize)
+	if gmailConsent.NextPageToken != "" {
+		messagesCall = messagesCall.PageToken(gmailConsent.NextPageToken)
+	}
+
+	messagesResponse, err := messagesCall.Context(ctx).Do()
+	if err != nil {
+		return fmt.Errorf("failed to list Gmail messages: %w", err)
+	}
+
+	debug.DebugTextPrint(fmt.Sprintf("Found %d messages to backfill for user %s", len(messagesResponse.Messages), userID))
+
+	// Process messages
+	result := &GmailSyncResult{
+		UserID:    userID,
+		StartedAt: time.Now(),
+		SyncType:  "backfill",
+	}
+
+	// Process in smaller chunks to avoid memory spikes
+	chunkSize := 20
+	for i := 0; i < len(messagesResponse.Messages); i += chunkSize {
+		end := i + chunkSize
+		if end > len(messagesResponse.Messages) {
+			end = len(messagesResponse.Messages)
+		}
+
+		for _, message := range messagesResponse.Messages[i:end] {
+			if err := s.processGmailMessage(ctx, gmailService, message.Id, userID, result); err != nil {
+				debug.DebugErrorTextPrint(fmt.Sprintf("Error processing backfill message %s: %v", message.Id, err))
+				// Continue despite errors
+			}
+		}
+
+		// Sleep to be nice to API and server
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Update next page token and status
+	updates := map[string]interface{}{
+		"next_page_token": messagesResponse.NextPageToken,
+		"updated_at":      time.Now(),
+	}
+
+	if messagesResponse.NextPageToken == "" {
+		updates["backfill_status"] = "completed"
+		debug.DebugTextPrint(fmt.Sprintf("Backfill completed for user %s", userID))
+	}
+
+	if err := s.db.Model(&gmailConsent).Updates(updates).Error; err != nil {
+		return fmt.Errorf("failed to update backfill state: %w", err)
+	}
+
+	// Queue next batch if there is a next page
+	if messagesResponse.NextPageToken != "" {
+		debug.DebugTextPrint(fmt.Sprintf("Queueing next backfill batch for user %s", userID))
+		// Add 2 minute delay between batches to reduce load
+		err := s.qstashService.PublishEmailSyncWithDelay(ctx, queue.EmailSyncMessage{
+			UserID:   userID.String(),
+			SyncType: "backfill",
+		}, 2*time.Minute)
+		if err != nil {
+			debug.DebugErrorTextPrint(fmt.Sprintf("Failed to queue next backfill job: %v", err))
+			// We don't return error here to avoid retrying the current successful batch
+			// The user might need to trigger sync again or we rely on scheduled syncs
+		}
+	}
+
+	return nil
 }

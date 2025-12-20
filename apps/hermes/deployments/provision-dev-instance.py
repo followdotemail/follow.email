@@ -1472,12 +1472,15 @@ class InstanceProvisioner:
                 return False
             
             # Move to proper location with correct permissions
+            # Use idempotent command to handle retries where file might have been moved in previous timed-out attempt
+            move_cmd = f"sudo bash -c 'if [ -f {remote_tmp} ]; then mv {remote_tmp} {remote_final}; elif [ -f {remote_final} ]; then echo \"File already moved\"; else echo \"Source missing and destination missing\"; exit 1; fi'"
+            
             move_config = CommandConfig(
                 description=f"Moving {os.path.basename(local_file)}",
-                command=f"sudo mv {remote_tmp} {remote_final}",
+                command=move_cmd,
                 criticality=CommandCriticality.CRITICAL,
-                timeout=60,
-                max_retries=2
+                timeout=120,
+                max_retries=3
             )
             if not self.run_command_with_retry(move_config).success:
                 print(f"{Colors.FAIL}Failed to move {os.path.basename(local_file)} to final location{Colors.ENDC}")
